@@ -43,6 +43,7 @@ class TestCodexActiveTurnRouting:
                         success=True, turn_id="turn-123", error=None
                     )
                 ),
+                record_queue_fallback=AsyncMock(),
             ),
             db=SimpleNamespace(
                 add_command=AsyncMock(return_value=SimpleNamespace(id=10)),
@@ -82,6 +83,7 @@ class TestCodexActiveTurnRouting:
                         success=False, turn_id=None, error="conflict"
                     )
                 ),
+                record_queue_fallback=AsyncMock(),
             ),
             db=SimpleNamespace(
                 add_command=AsyncMock(return_value=SimpleNamespace(id=11)),
@@ -106,6 +108,7 @@ class TestCodexActiveTurnRouting:
 
         assert handled is True
         deps.db.add_to_queue.assert_awaited_once()
+        deps.codex_executor.record_queue_fallback.assert_awaited_once_with(success=True)
         mock_ensure_queue.assert_awaited_once()
         deps.db.update_command_status.assert_any_await(
             11,
@@ -125,6 +128,7 @@ class TestCodexActiveTurnRouting:
                         success=False, turn_id=None, error="busy"
                     )
                 ),
+                record_queue_fallback=AsyncMock(),
             ),
             db=SimpleNamespace(
                 add_command=AsyncMock(return_value=SimpleNamespace(id=12)),
@@ -150,5 +154,8 @@ class TestCodexActiveTurnRouting:
             "failed",
             output="Steer failed and queue fallback failed. steer_error=busy queue_error=db insert failed",
             error_message="db insert failed",
+        )
+        deps.codex_executor.record_queue_fallback.assert_awaited_once_with(
+            success=False
         )
         assert client.chat_postMessage.await_count >= 1

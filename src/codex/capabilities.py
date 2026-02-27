@@ -45,7 +45,7 @@ _CLAUDE_TO_CODEX_HINTS: dict[str, str] = {
     "/context": "Use Slack thread history and `/codex-status`.",
     "/init": "Codex does not provide `/init` in this Slack integration.",
     "/memory": "Codex does not use CLAUDE.md memory files.",
-    "/stats": "Stats command is not exposed for Codex in Slack mode.",
+    "/stats": "Use `/codex-metrics` for runtime integration metrics in Codex sessions.",
     "/todos": "Use normal prompts to manage TODO tracking.",
 }
 

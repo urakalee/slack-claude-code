@@ -84,8 +84,70 @@ class SubprocessExecutor:
         self._execution_track_ids: dict[str, str] = {}  # execution_id -> track_id
         self._active_turns_by_scope: dict[str, _ActiveTurnState] = {}
         self._active_turns_by_track: dict[str, _ActiveTurnState] = {}
+        self._metrics: dict[str, int] = {
+            "turn_start_registered": 0,
+            "turn_state_cleared": 0,
+            "steer_requests": 0,
+            "steer_successes": 0,
+            "steer_failures": 0,
+            "steer_timeouts": 0,
+            "interrupt_requests": 0,
+            "interrupt_successes": 0,
+            "interrupt_failures": 0,
+            "interrupt_timeouts": 0,
+            "queue_fallback_attempts": 0,
+            "queue_fallback_successes": 0,
+            "queue_fallback_failures": 0,
+        }
         self._lock: asyncio.Lock = asyncio.Lock()
         self.db = db
+
+    async def _increment_metric(self, metric_name: str, count: int = 1) -> None:
+        """Increment a named runtime metric counter."""
+        async with self._lock:
+            if metric_name not in self._metrics:
+                self._metrics[metric_name] = 0
+            self._metrics[metric_name] += count
+
+    async def record_queue_fallback(self, success: bool) -> None:
+        """Record steer-failure queue fallback outcome from app-level routing."""
+        await self._increment_metric("queue_fallback_attempts")
+        if success:
+            await self._increment_metric("queue_fallback_successes")
+            return
+        await self._increment_metric("queue_fallback_failures")
+
+    async def get_metrics_snapshot(self) -> dict[str, Any]:
+        """Return a snapshot of runtime Codex integration metrics."""
+        async with self._lock:
+            counters = dict(self._metrics)
+            active_turns = sum(
+                1
+                for state in self._active_turns_by_scope.values()
+                if not state.done_event.is_set()
+            )
+
+        def safe_rate(success_key: str, total_key: str) -> float:
+            total = counters.get(total_key, 0)
+            if total <= 0:
+                return 0.0
+            return counters.get(success_key, 0) / total
+
+        counters["active_turns"] = active_turns
+        counters["steer_success_rate"] = safe_rate("steer_successes", "steer_requests")
+        counters["interrupt_success_rate"] = safe_rate(
+            "interrupt_successes", "interrupt_requests"
+        )
+        counters["queue_fallback_success_rate"] = safe_rate(
+            "queue_fallback_successes", "queue_fallback_attempts"
+        )
+        return counters
+
+    async def reset_metrics(self) -> None:
+        """Reset runtime Codex integration metrics counters."""
+        async with self._lock:
+            for key in list(self._metrics.keys()):
+                self._metrics[key] = 0
 
     async def execute(
         self,
@@ -532,11 +594,13 @@ class SubprocessExecutor:
         async def handle_control_request(request: _ControlRequest) -> None:
             """Queue steer/interrupt RPC calls for the active turn."""
             if request.kind == "steer":
+                await self._increment_metric("steer_requests")
                 logger.info(
                     f"{log_prefix}event=turn_steer_requested scope={session_scope} "
                     f"thread_id={result_session_id or 'unknown'} turn_id={current_turn_id or 'unknown'}"
                 )
                 if not result_session_id or not current_turn_id:
+                    await self._increment_metric("steer_failures")
                     if not request.future.done():
                         request.future.set_result(
                             TurnControlResult(
@@ -563,11 +627,13 @@ class SubprocessExecutor:
                 return
 
             if request.kind == "interrupt":
+                await self._increment_metric("interrupt_requests")
                 logger.info(
                     f"{log_prefix}event=turn_interrupt_requested scope={session_scope} "
                     f"thread_id={result_session_id or 'unknown'} turn_id={current_turn_id or 'unknown'}"
                 )
                 if not result_session_id or not current_turn_id:
+                    await self._increment_metric("interrupt_failures")
                     if not request.future.done():
                         request.future.set_result(
                             TurnControlResult(
@@ -606,6 +672,9 @@ class SubprocessExecutor:
                 if control_request:
                     if not control_request.future.done():
                         if rpc.get("error"):
+                            await self._increment_metric(
+                                f"{control_request.kind}_failures"
+                            )
                             logger.warning(
                                 f"{log_prefix}event=turn_{control_request.kind}_result success=false "
                                 f"scope={session_scope} turn_id={current_turn_id or 'unknown'} "
@@ -624,6 +693,9 @@ class SubprocessExecutor:
                             if turn_id:
                                 if active_turn_state:
                                     active_turn_state.turn_id = str(turn_id)
+                                await self._increment_metric(
+                                    f"{control_request.kind}_successes"
+                                )
                                 logger.info(
                                     f"{log_prefix}event=turn_{control_request.kind}_result success=true "
                                     f"scope={session_scope} turn_id={turn_id}"
@@ -636,6 +708,9 @@ class SubprocessExecutor:
                                     )
                                 )
                             else:
+                                await self._increment_metric(
+                                    f"{control_request.kind}_successes"
+                                )
                                 logger.info(
                                     f"{log_prefix}event=turn_{control_request.kind}_result success=true "
                                     f"scope={session_scope} turn_id={current_turn_id or 'unknown'}"
@@ -785,6 +860,7 @@ class SubprocessExecutor:
                 async with self._lock:
                     self._active_turns_by_scope[session_scope] = active_turn_state
                     self._active_turns_by_track[track_id] = active_turn_state
+                await self._increment_metric("turn_start_registered")
                 logger.info(
                     f"{log_prefix}event=turn_start_registered scope={session_scope} "
                     f"thread_id={result_session_id} turn_id={current_turn_id} track_id={track_id}"
@@ -891,6 +967,7 @@ class SubprocessExecutor:
                     self._active_turns_by_scope.pop(session_scope, None)
             if active_turn_state:
                 active_turn_state.done_event.set()
+                await self._increment_metric("turn_state_cleared")
                 logger.info(
                     f"{log_prefix}event=turn_state_cleared scope={session_scope} "
                     f"thread_id={active_turn_state.thread_id} "
@@ -1045,6 +1122,8 @@ class SubprocessExecutor:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
+            await self._increment_metric(f"{kind}_timeouts")
+            await self._increment_metric(f"{kind}_failures")
             return TurnControlResult(
                 success=False,
                 error=f"{kind} request timed out",

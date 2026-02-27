@@ -5,6 +5,7 @@ from slack_bolt.async_app import AsyncApp
 from src.codex.capabilities import normalize_codex_approval_mode
 from src.config import config
 from src.utils.execution_scope import build_session_scope
+from src.utils.formatters.command import error_message
 from src.utils.formatters.session import session_cleanup_result, session_list
 
 from ..base import CommandContext, HandlerDependencies, slack_command
@@ -213,4 +214,75 @@ def register_codex_session_commands(app: AsyncApp, deps: HandlerDependencies) ->
                     ],
                 },
             ],
+        )
+
+    @app.command("/codex-metrics")
+    @slack_command()
+    async def handle_codex_metrics(
+        ctx: CommandContext, deps: HandlerDependencies = deps
+    ):
+        """Show runtime Codex integration metrics."""
+        session = await deps.db.get_or_create_session(
+            ctx.channel_id, ctx.thread_ts, config.DEFAULT_WORKING_DIR
+        )
+        if session.get_backend() != "codex":
+            await ctx.client.chat_postMessage(
+                channel=ctx.channel_id,
+                thread_ts=ctx.thread_ts,
+                text="/codex-metrics is only available for Codex sessions.",
+                blocks=error_message(
+                    "`/codex-metrics` is only available in Codex sessions."
+                ),
+            )
+            return
+        if not deps.codex_executor:
+            await ctx.client.chat_postMessage(
+                channel=ctx.channel_id,
+                thread_ts=ctx.thread_ts,
+                text="Codex executor is not configured.",
+                blocks=error_message("Codex executor is not configured."),
+            )
+            return
+
+        if (ctx.text or "").strip().lower() == "reset":
+            await deps.codex_executor.reset_metrics()
+            await ctx.client.chat_postMessage(
+                channel=ctx.channel_id,
+                thread_ts=ctx.thread_ts,
+                text="Codex metrics reset",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": ":wastebasket: Reset Codex runtime metrics counters.",
+                        },
+                    }
+                ],
+            )
+            return
+
+        snapshot = await deps.codex_executor.get_metrics_snapshot()
+        text = (
+            "*Codex Runtime Metrics*\n"
+            f"• active turns: `{snapshot.get('active_turns', 0)}`\n"
+            f"• turn starts: `{snapshot.get('turn_start_registered', 0)}`\n"
+            f"• turn clears: `{snapshot.get('turn_state_cleared', 0)}`\n"
+            f"• steer: `{snapshot.get('steer_successes', 0)}/{snapshot.get('steer_requests', 0)}` "
+            f"({snapshot.get('steer_success_rate', 0.0):.0%}) "
+            f"failures=`{snapshot.get('steer_failures', 0)}` "
+            f"timeouts=`{snapshot.get('steer_timeouts', 0)}`\n"
+            f"• interrupts: `{snapshot.get('interrupt_successes', 0)}/{snapshot.get('interrupt_requests', 0)}` "
+            f"({snapshot.get('interrupt_success_rate', 0.0):.0%}) "
+            f"failures=`{snapshot.get('interrupt_failures', 0)}` "
+            f"timeouts=`{snapshot.get('interrupt_timeouts', 0)}`\n"
+            f"• queue fallback: `{snapshot.get('queue_fallback_successes', 0)}/{snapshot.get('queue_fallback_attempts', 0)}` "
+            f"({snapshot.get('queue_fallback_success_rate', 0.0):.0%}) "
+            f"failures=`{snapshot.get('queue_fallback_failures', 0)}`"
+        )
+        await ctx.client.chat_postMessage(
+            channel=ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            text="Codex metrics",
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
         )

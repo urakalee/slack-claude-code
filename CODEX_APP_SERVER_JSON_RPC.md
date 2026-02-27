@@ -32,6 +32,11 @@ Additional metadata/lifecycle RPCs (invoked on-demand by commands/status):
 - `experimentalFeature/list`
 - `mcpServerStatus/list`
 
+Used by Slack command surfaces:
+- `/codex-thread` -> thread lifecycle/read APIs
+- `/codex-config` -> config/model/account/feature APIs
+- `/review status` -> `thread/read` status inspection
+
 `thread/start|resume` parameters sent:
 - `cwd`
 - `approvalPolicy` (`untrusted`, `on-request`, `never`)

@@ -19,6 +19,18 @@ def _resolve_thread_id(token: Optional[str], session: Session) -> Optional[str]:
     return normalized
 
 
+def _parse_optional_int(
+    token: Optional[str], default: int, minimum: int, maximum: int
+) -> int:
+    """Parse bounded integer argument with fallback default."""
+    if not token:
+        return default
+    try:
+        return max(minimum, min(int(token), maximum))
+    except ValueError:
+        return default
+
+
 def register_codex_thread_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
     """Register `/codex-thread` command handlers."""
 
@@ -63,8 +75,8 @@ def register_codex_thread_commands(app: AsyncApp, deps: HandlerDependencies) -> 
                             "type": "mrkdwn",
                             "text": (
                                 "*Codex Thread Commands*\n"
-                                "• `/codex-thread list`\n"
-                                "• `/codex-thread read <thread_id|current>`\n"
+                                "• `/codex-thread list [limit] [archived]`\n"
+                                "• `/codex-thread read [thread_id|current] [turn_limit]`\n"
                                 "• `/codex-thread fork <thread_id|current>`\n"
                                 "• `/codex-thread archive <thread_id|current>`\n"
                                 "• `/codex-thread unarchive <thread_id|current>`\n"
@@ -82,23 +94,33 @@ def register_codex_thread_commands(app: AsyncApp, deps: HandlerDependencies) -> 
 
         try:
             if subcommand == "list":
+                limit = 20
+                archived = False
+                for token in tokens[1:]:
+                    lowered = token.lower()
+                    if lowered in {"archived", "--archived"}:
+                        archived = True
+                        continue
+                    limit = _parse_optional_int(token, limit, 1, 100)
                 result = await deps.codex_executor.thread_list(
-                    working_directory, limit=20
+                    working_directory, limit=limit, archived=archived
                 )
                 threads = result.get("data", [])
                 if not threads:
                     text = "No threads found."
                 else:
                     lines = []
-                    for thread in threads[:10]:
+                    for index, thread in enumerate(threads[:limit], start=1):
                         thread_id = thread.get("id", "unknown")
                         name = thread.get("name") or "(unnamed)"
                         status = thread.get("status", "unknown")
                         updated_at = thread.get("updatedAt", "unknown")
+                        turn_count = thread.get("turnCount", "n/a")
                         lines.append(
-                            f"• `{thread_id}`\nname: {name}\nstatus: {status}\nupdated: {updated_at}"
+                            f"{index}. `{thread_id}`\nname: {name}\nstatus: {status}\nupdated: {updated_at}\nturns: {turn_count}"
                         )
-                    text = "*Recent threads*\n" + "\n\n".join(lines)
+                    header = f"*Recent threads* (archived={archived}, showing {min(len(threads), limit)})"
+                    text = header + "\n\n" + "\n\n".join(lines)
 
                 await ctx.client.chat_postMessage(
                     channel=ctx.channel_id,
@@ -114,9 +136,17 @@ def register_codex_thread_commands(app: AsyncApp, deps: HandlerDependencies) -> 
                 return
 
             if subcommand == "read":
-                thread_id = _resolve_thread_id(
-                    tokens[1] if len(tokens) > 1 else None, session
-                )
+                thread_token = None
+                turn_limit_token = None
+                if len(tokens) > 1:
+                    if tokens[1].isdigit():
+                        turn_limit_token = tokens[1]
+                    else:
+                        thread_token = tokens[1]
+                if len(tokens) > 2:
+                    turn_limit_token = tokens[2]
+                turn_limit = _parse_optional_int(turn_limit_token, 5, 1, 20)
+                thread_id = _resolve_thread_id(thread_token, session)
                 if not thread_id:
                     raise RuntimeError(
                         "No active Codex thread. Run a Codex message first."
@@ -126,12 +156,24 @@ def register_codex_thread_commands(app: AsyncApp, deps: HandlerDependencies) -> 
                 )
                 thread = result.get("thread", {})
                 turns = thread.get("turns", [])
+                recent_turns = turns[-turn_limit:] if turns else []
+                if recent_turns:
+                    turn_lines = []
+                    for turn in recent_turns:
+                        turn_lines.append(
+                            f"• `{turn.get('id', 'unknown')}` status=`{turn.get('status', 'unknown')}` "
+                            f"created=`{turn.get('createdAt', 'n/a')}`"
+                        )
+                    turns_text = "\n".join(turn_lines)
+                else:
+                    turns_text = "No turns recorded."
                 summary = (
                     f"*Thread:* `{thread.get('id', thread_id)}`\n"
                     f"*Name:* {thread.get('name') or '(unnamed)'}\n"
                     f"*Status:* {thread.get('status', 'unknown')}\n"
                     f"*Turns:* {len(turns)}\n"
-                    f"*Preview:* {thread.get('preview') or '(none)'}"
+                    f"*Preview:* {thread.get('preview') or '(none)'}\n\n"
+                    f"*Recent Turns (last {len(recent_turns)}):*\n{turns_text}"
                 )
                 await ctx.client.chat_postMessage(
                     channel=ctx.channel_id,

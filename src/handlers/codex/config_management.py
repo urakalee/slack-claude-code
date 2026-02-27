@@ -64,6 +64,15 @@ def _extract_requirements(payload: dict) -> list[dict]:
     return []
 
 
+def _extract_items(payload: dict, keys: tuple[str, ...]) -> list[dict]:
+    """Extract list payload from common app-server response shapes."""
+    for key in keys:
+        candidate = payload.get(key)
+        if isinstance(candidate, list):
+            return [item for item in candidate if isinstance(item, dict)]
+    return []
+
+
 def _missing_requirements(requirements: list[dict]) -> list[dict]:
     """Return required requirements that are not satisfied."""
     missing: list[dict] = []
@@ -221,6 +230,91 @@ async def _post_config_raw(
     )
 
 
+async def _post_model_list(
+    ctx: CommandContext, deps: HandlerDependencies, working_directory: str, limit: int
+) -> None:
+    """Post detailed model inventory."""
+    model_data = await deps.codex_executor.model_list(working_directory)
+    models = _extract_items(model_data, ("data", "models", "items"))
+    if not models:
+        text = "No models returned by app-server."
+    else:
+        lines = []
+        for model in models[:limit]:
+            model_id = model.get("id", model.get("name", "unknown"))
+            provider = model.get("provider", "default")
+            default_effort = model.get("defaultEffort", model.get("effort", "n/a"))
+            lines.append(
+                f"• `{model_id}`\nprovider: `{provider}` • default effort: `{default_effort}`"
+            )
+        text = "*Codex Models*\n" + "\n\n".join(lines)
+        if len(models) > limit:
+            text += f"\n\n_Showing {limit} of {len(models)} models._"
+    await ctx.client.chat_postMessage(
+        channel=ctx.channel_id,
+        thread_ts=ctx.thread_ts,
+        text="Codex models",
+        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    )
+
+
+async def _post_account_details(
+    ctx: CommandContext, deps: HandlerDependencies, working_directory: str
+) -> None:
+    """Post detailed account metadata."""
+    account_data = await deps.codex_executor.account_read(working_directory)
+    account = account_data.get("account")
+    if not isinstance(account, dict):
+        text = "No account metadata returned."
+    else:
+        lines = []
+        for key in sorted(account.keys()):
+            value = account[key]
+            if _is_sensitive_key(str(key)):
+                formatted = "***REDACTED***"
+            else:
+                formatted = _sanitize_value(value)
+            lines.append(f"• *{key}:* `{formatted}`")
+        text = "*Codex Account Details*\n" + "\n".join(lines)
+    await ctx.client.chat_postMessage(
+        channel=ctx.channel_id,
+        thread_ts=ctx.thread_ts,
+        text="Codex account details",
+        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    )
+
+
+async def _post_feature_list(
+    ctx: CommandContext, deps: HandlerDependencies, working_directory: str, limit: int
+) -> None:
+    """Post experimental feature listing."""
+    feature_data = await deps.codex_executor.experimental_feature_list(
+        working_directory
+    )
+    features = _extract_items(feature_data, ("data", "features", "items"))
+    if not features:
+        text = "No experimental features reported."
+    else:
+        lines = []
+        for feature in features[:limit]:
+            name = feature.get("name", feature.get("id", "unknown"))
+            status = feature.get("status", "unknown")
+            description = feature.get("description", "")
+            line = f"• `{name}` status=`{status}`"
+            if description:
+                line += f"\n{description}"
+            lines.append(line)
+        text = "*Codex Experimental Features*\n" + "\n\n".join(lines)
+        if len(features) > limit:
+            text += f"\n\n_Showing {limit} of {len(features)} features._"
+    await ctx.client.chat_postMessage(
+        channel=ctx.channel_id,
+        thread_ts=ctx.thread_ts,
+        text="Codex experimental features",
+        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    )
+
+
 def register_codex_config_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
     """Register `/codex-config` command handlers."""
 
@@ -252,7 +346,14 @@ def register_codex_config_commands(app: AsyncApp, deps: HandlerDependencies) -> 
             )
             return
 
-        subcommand = (ctx.text or "").strip().lower() or "summary"
+        tokens = ctx.text.split() if ctx.text else []
+        subcommand = tokens[0].lower() if tokens else "summary"
+        raw_limit = tokens[1] if len(tokens) > 1 else "20"
+        try:
+            list_limit = max(1, min(int(raw_limit), 100))
+        except ValueError:
+            list_limit = 20
+
         try:
             if subcommand in {"summary", "show"}:
                 await _post_config_summary(
@@ -279,7 +380,32 @@ def register_codex_config_commands(app: AsyncApp, deps: HandlerDependencies) -> 
                     working_directory=session.working_directory,
                 )
                 return
-            raise RuntimeError("Usage: /codex-config [summary|requirements|raw]")
+            if subcommand == "models":
+                await _post_model_list(
+                    ctx=ctx,
+                    deps=deps,
+                    working_directory=session.working_directory,
+                    limit=list_limit,
+                )
+                return
+            if subcommand == "account":
+                await _post_account_details(
+                    ctx=ctx,
+                    deps=deps,
+                    working_directory=session.working_directory,
+                )
+                return
+            if subcommand == "features":
+                await _post_feature_list(
+                    ctx=ctx,
+                    deps=deps,
+                    working_directory=session.working_directory,
+                    limit=list_limit,
+                )
+                return
+            raise RuntimeError(
+                "Usage: /codex-config [summary|requirements|raw|models [limit]|account|features [limit]]"
+            )
         except Exception as e:
             await ctx.client.chat_postMessage(
                 channel=ctx.channel_id,

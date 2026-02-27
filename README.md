@@ -71,7 +71,8 @@ Use these when your session model is a Codex model.
 | `/codex-sessions` | List channel sessions | `/codex-sessions` |
 | `/codex-cleanup` | Remove inactive sessions | `/codex-cleanup 30` |
 | `/codex-thread` | Manage Codex thread lifecycle | `/codex-thread list` |
-| `/codex-config` | Inspect Codex config and requirements | `/codex-config requirements` |
+| `/codex-config` | Inspect Codex config, requirements, models, account, features | `/codex-config features` |
+| `/codex-metrics` | Runtime steer/interrupt/queue-fallback metrics | `/codex-metrics` |
 
 Codex transport uses `codex app-server` JSON-RPC for all modes.
 See [Codex app-server JSON-RPC integration notes](CODEX_APP_SERVER_JSON_RPC.md) for
@@ -79,6 +80,7 @@ the exact request/notification methods this app handles.
 
 Codex session command support:
 - `/review` starts a Codex review when the active session backend is Codex
+- `/review status [thread_id|current]` inspects latest review/thread lifecycle status
 - `/mcp` shows Codex MCP server status when the active session backend is Codex
 
 `/mode` in Codex sessions:

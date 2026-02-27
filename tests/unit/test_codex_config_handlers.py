@@ -217,3 +217,126 @@ async def test_codex_config_reports_missing_executor():
 
     kwargs = client.chat_postMessage.await_args.kwargs
     assert kwargs["text"] == "Codex executor is not configured."
+
+
+@pytest.mark.asyncio
+async def test_codex_config_models_lists_model_entries():
+    app = _FakeApp()
+    session = Session(model="gpt-5.3-codex", working_directory="/repo")
+    codex_executor = SimpleNamespace(
+        config_read=AsyncMock(return_value={"config": {}}),
+        config_requirements_read=AsyncMock(return_value={"requirements": []}),
+        model_list=AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "id": "gpt-5.3-codex",
+                        "provider": "openai",
+                        "defaultEffort": "medium",
+                    }
+                ]
+            }
+        ),
+    )
+    deps = _deps(session, codex_executor)
+    register_codex_config_commands(app, deps)
+
+    handler = app.handlers["/codex-config"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "models",
+            "command": "/codex-config",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["text"] == "Codex models"
+    assert "gpt-5.3-codex" in kwargs["blocks"][0]["text"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_codex_config_account_redacts_sensitive_fields():
+    app = _FakeApp()
+    session = Session(model="gpt-5.3-codex", working_directory="/repo")
+    codex_executor = SimpleNamespace(
+        config_read=AsyncMock(return_value={"config": {}}),
+        config_requirements_read=AsyncMock(return_value={"requirements": []}),
+        account_read=AsyncMock(
+            return_value={
+                "account": {
+                    "type": "chatgpt",
+                    "email": "user@example.com",
+                    "apiKey": "secret-key",
+                }
+            }
+        ),
+    )
+    deps = _deps(session, codex_executor)
+    register_codex_config_commands(app, deps)
+
+    handler = app.handlers["/codex-config"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "account",
+            "command": "/codex-config",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["text"] == "Codex account details"
+    text = kwargs["blocks"][0]["text"]["text"]
+    assert "user@example.com" in text
+    assert "***REDACTED***" in text
+
+
+@pytest.mark.asyncio
+async def test_codex_config_features_lists_items():
+    app = _FakeApp()
+    session = Session(model="gpt-5.3-codex", working_directory="/repo")
+    codex_executor = SimpleNamespace(
+        config_read=AsyncMock(return_value={"config": {}}),
+        config_requirements_read=AsyncMock(return_value={"requirements": []}),
+        experimental_feature_list=AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "name": "fast_turn_merge",
+                        "status": "enabled",
+                        "description": "test",
+                    }
+                ]
+            }
+        ),
+    )
+    deps = _deps(session, codex_executor)
+    register_codex_config_commands(app, deps)
+
+    handler = app.handlers["/codex-config"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "features",
+            "command": "/codex-config",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["text"] == "Codex experimental features"
+    assert "fast_turn_merge" in kwargs["blocks"][0]["text"]["text"]

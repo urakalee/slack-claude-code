@@ -833,6 +833,75 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 )
                 return
 
+            tokens = ctx.text.split() if ctx.text else []
+            if tokens and tokens[0].lower() in {"status", "read"}:
+                thread_arg = tokens[1] if len(tokens) > 1 else "current"
+                thread_id = (
+                    session.codex_session_id
+                    if thread_arg == "current"
+                    else thread_arg.strip()
+                )
+                if not thread_id:
+                    await ctx.client.chat_postMessage(
+                        channel=ctx.channel_id,
+                        thread_ts=ctx.thread_ts,
+                        text="No active Codex session.",
+                        blocks=error_message(
+                            "No active Codex thread for this session yet. Send a Codex message first."
+                        ),
+                    )
+                    return
+                try:
+                    result = await deps.codex_executor.thread_read(
+                        thread_id=thread_id,
+                        working_directory=session.working_directory,
+                        include_turns=True,
+                    )
+                    thread = result.get("thread", {})
+                    turns = thread.get("turns", [])
+                    if turns:
+                        recent_turns = turns[-5:]
+                        turn_lines = []
+                        for turn in recent_turns:
+                            turn_lines.append(
+                                f"• `{turn.get('id', 'unknown')}` status=`{turn.get('status', 'unknown')}` "
+                                f"created=`{turn.get('createdAt', 'n/a')}`"
+                            )
+                        turns_text = "\n".join(turn_lines)
+                        latest_status = recent_turns[-1].get(
+                            "status", thread.get("status", "unknown")
+                        )
+                    else:
+                        turns_text = "No turns found."
+                        latest_status = thread.get("status", "unknown")
+                    summary = (
+                        f"*Codex Review Status*\n"
+                        f"Thread: `{thread.get('id', thread_id)}`\n"
+                        f"Name: {thread.get('name') or '(unnamed)'}\n"
+                        f"Status: `{latest_status}`\n"
+                        f"Turns: `{len(turns)}`\n\n"
+                        f"*Recent Turns*\n{turns_text}"
+                    )
+                    await ctx.client.chat_postMessage(
+                        channel=ctx.channel_id,
+                        thread_ts=ctx.thread_ts,
+                        text="Codex review status",
+                        blocks=[
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": summary},
+                            }
+                        ],
+                    )
+                except Exception as e:
+                    await ctx.client.chat_postMessage(
+                        channel=ctx.channel_id,
+                        thread_ts=ctx.thread_ts,
+                        text=f"Failed to fetch review status: {e}",
+                        blocks=error_message(str(e)),
+                    )
+                return
+
             target: dict
             if ctx.text:
                 target = {"type": "custom", "instructions": ctx.text}
@@ -854,6 +923,11 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 )
                 if review_thread_id:
                     review_summary += f"\nReview thread: `{review_thread_id}`"
+                    review_summary += f"\nUse `/review status {review_thread_id}` to inspect progress."
+                else:
+                    review_summary += (
+                        "\nUse `/review status` to inspect latest turn status."
+                    )
                 await ctx.client.chat_postMessage(
                     channel=ctx.channel_id,
                     thread_ts=ctx.thread_ts,

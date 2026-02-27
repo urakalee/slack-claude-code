@@ -714,3 +714,24 @@ class TestCodexSubprocessExecutor:
         assert result.success is True
         assert steer_result.success is False
         assert steer_result.error != "steer request timed out"
+
+    @pytest.mark.asyncio
+    async def test_metrics_snapshot_and_reset(self):
+        """Executor should expose and reset integration metrics."""
+        executor = SubprocessExecutor()
+        await executor._increment_metric("steer_requests", 2)
+        await executor._increment_metric("steer_successes", 1)
+        await executor.record_queue_fallback(success=True)
+        await executor.record_queue_fallback(success=False)
+
+        snapshot = await executor.get_metrics_snapshot()
+        assert snapshot["steer_requests"] == 2
+        assert snapshot["steer_successes"] == 1
+        assert snapshot["queue_fallback_attempts"] == 2
+        assert snapshot["queue_fallback_successes"] == 1
+        assert snapshot["queue_fallback_failures"] == 1
+
+        await executor.reset_metrics()
+        reset_snapshot = await executor.get_metrics_snapshot()
+        assert reset_snapshot["steer_requests"] == 0
+        assert reset_snapshot["queue_fallback_attempts"] == 0

@@ -109,3 +109,8 @@ class TestCodexCommandHints:
         """Codex hint for /claude-config should include /codex-config."""
         hint = get_codex_hint_for_claude_command("/claude-config")
         assert "/codex-config" in hint
+
+    def test_stats_hint_points_to_codex_metrics(self):
+        """Codex hint for /stats should include /codex-metrics."""
+        hint = get_codex_hint_for_claude_command("/stats")
+        assert "/codex-metrics" in hint

@@ -246,7 +246,9 @@ async def _route_codex_message_to_active_turn_or_queue(
             thread_ts=thread_ts,
             prompt=prompt,
         )
+        await deps.codex_executor.record_queue_fallback(success=True)
     except Exception as e:
+        await deps.codex_executor.record_queue_fallback(success=False)
         queue_error = str(e)
         await deps.db.update_command_status(
             cmd_history.id,
