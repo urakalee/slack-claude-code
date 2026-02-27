@@ -4,6 +4,7 @@ import asyncio
 import os
 
 import pytest
+import pytest_asyncio
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.hooks import HookRegistry
@@ -93,7 +94,7 @@ def slack_user_client(slack_user_token: str) -> AsyncWebClient:
     return AsyncWebClient(token=slack_user_token)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def slack_bot_user_id(slack_client: AsyncWebClient) -> str:
     """Resolve the bot user ID for mention tests."""
     response = await slack_client.auth_test()

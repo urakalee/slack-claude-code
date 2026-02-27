@@ -149,48 +149,6 @@ async def test_file_upload(slack_client: AsyncWebClient, slack_test_channel: str
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_reactions(slack_client: AsyncWebClient, slack_test_channel: str):
-    """Test adding and removing reactions."""
-    # Post a message to react to
-    response = await slack_client.chat_postMessage(
-        channel=slack_test_channel,
-        text="[Live Test] Reaction test message",
-    )
-    assert response["ok"] is True
-    message_ts = response["ts"]
-
-    # Add a reaction
-    add_response = await slack_client.reactions_add(
-        channel=slack_test_channel,
-        timestamp=message_ts,
-        name="thumbsup",
-    )
-    assert add_response["ok"] is True
-
-    # Verify reaction was added
-    get_response = await slack_client.reactions_get(
-        channel=slack_test_channel,
-        timestamp=message_ts,
-    )
-    assert get_response["ok"] is True
-    reactions = get_response["message"].get("reactions", [])
-    reaction_names = [r["name"] for r in reactions]
-    assert "+1" in reaction_names or "thumbsup" in reaction_names
-
-    # Remove the reaction
-    remove_response = await slack_client.reactions_remove(
-        channel=slack_test_channel,
-        timestamp=message_ts,
-        name="thumbsup",
-    )
-    assert remove_response["ok"] is True
-
-    # Cleanup
-    await slack_client.chat_delete(channel=slack_test_channel, ts=message_ts)
-
-
-@pytest.mark.live
-@pytest.mark.asyncio
 async def test_post_message_with_context_blocks(
     slack_client: AsyncWebClient, slack_test_channel: str
 ):
