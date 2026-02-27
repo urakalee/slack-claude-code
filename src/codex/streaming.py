@@ -27,6 +27,10 @@ CODEX_TOOL_SUMMARY_RULES = {
     "search": {"type": "pattern", "keys": ["pattern", "query"]},
     "web_fetch": {"type": "url", "keys": ["url"]},
     "web_search": {"type": "text", "keys": ["query"]},
+    "fuzzy_file_search": {"type": "pattern", "keys": ["query", "pattern"]},
+    "file_change": {"type": "path", "keys": ["path"]},
+    "mcp_tool_call": {"type": "text", "keys": ["server", "tool"]},
+    "reasoning": {"type": "text", "keys": ["summary", "content"]},
     "request_user_input": {"type": "first_question", "keys": ["questions"]},
 }
 
@@ -57,8 +61,12 @@ class StreamParser:
         """Append assistant text to accumulated output buffers."""
         if not content:
             return
-        self.accumulated_content = concat_with_spacing(self.accumulated_content, content)
-        self.accumulated_detailed = concat_with_spacing(self.accumulated_detailed, content)
+        self.accumulated_content = concat_with_spacing(
+            self.accumulated_content, content
+        )
+        self.accumulated_detailed = concat_with_spacing(
+            self.accumulated_detailed, content
+        )
 
     def _create_tool_call(
         self,
@@ -129,7 +137,9 @@ class StreamParser:
     ) -> StreamMessage:
         """Create a normalized tool-result StreamMessage."""
         full_content = content or ""
-        content_preview = full_content[:500] + "..." if len(full_content) > 500 else full_content
+        content_preview = (
+            full_content[:500] + "..." if len(full_content) > 500 else full_content
+        )
         tool_activities = []
 
         if tool_use_id in self.pending_tools:
@@ -222,13 +232,15 @@ class StreamParser:
             )
 
         elif event_type == "turn.started":
-            return StreamMessage(type="turn_started", session_id=self.session_id, raw=data)
+            return StreamMessage(
+                type="turn_started", session_id=self.session_id, raw=data
+            )
 
         elif event_type == "item.started":
             # New stream format: item lifecycle events.
             item = data.get("item", {})
             item_type = item.get("type")
-            if item_type == "command_execution":
+            if item_type in {"command_execution", "commandExecution"}:
                 tool_id = str(item.get("id", "unknown"))
                 command = item.get("command", "")
                 return self._create_tool_call(
@@ -237,13 +249,60 @@ class StreamParser:
                     tool_input={"command": command},
                     raw_data=data,
                 )
-            return StreamMessage(type="item_started", session_id=self.session_id, raw=data)
+            if item_type == "webSearch":
+                tool_id = str(item.get("id", "unknown"))
+                return self._create_tool_call(
+                    tool_id=tool_id,
+                    tool_name="web_search",
+                    tool_input={"query": item.get("query", "")},
+                    raw_data=data,
+                )
+            if item_type == "fuzzyFileSearch":
+                tool_id = str(item.get("id", "unknown"))
+                query = item.get("query") or item.get("pattern") or ""
+                return self._create_tool_call(
+                    tool_id=tool_id,
+                    tool_name="fuzzy_file_search",
+                    tool_input={"query": query},
+                    raw_data=data,
+                )
+            if item_type == "fileChange":
+                tool_id = str(item.get("id", "unknown"))
+                first_change = (item.get("changes") or [{}])[0]
+                return self._create_tool_call(
+                    tool_id=tool_id,
+                    tool_name="file_change",
+                    tool_input={"path": first_change.get("path", "")},
+                    raw_data=data,
+                )
+            if item_type == "mcpToolCall":
+                tool_id = str(item.get("id", "unknown"))
+                return self._create_tool_call(
+                    tool_id=tool_id,
+                    tool_name="mcp_tool_call",
+                    tool_input={
+                        "server": item.get("server", ""),
+                        "tool": item.get("tool", ""),
+                    },
+                    raw_data=data,
+                )
+            if item_type == "reasoning":
+                tool_id = str(item.get("id", "unknown"))
+                return self._create_tool_call(
+                    tool_id=tool_id,
+                    tool_name="reasoning",
+                    tool_input={"summary": "reasoning in progress"},
+                    raw_data=data,
+                )
+            return StreamMessage(
+                type="item_started", session_id=self.session_id, raw=data
+            )
 
         elif event_type == "item.completed":
             # New stream format: completed items include assistant messages and command results.
             item = data.get("item", {})
             item_type = item.get("type")
-            if item_type == "agent_message":
+            if item_type in {"agent_message", "agentMessage"}:
                 content = item.get("text", "")
                 self._append_assistant_content(content)
                 return StreamMessage(
@@ -253,10 +312,13 @@ class StreamParser:
                     session_id=self.session_id,
                     raw=data,
                 )
-            if item_type == "command_execution":
+            if item_type in {"command_execution", "commandExecution"}:
                 tool_id = str(item.get("id", "unknown"))
-                command_output = item.get("aggregated_output", item.get("output", ""))
-                exit_code = item.get("exit_code")
+                command_output = item.get(
+                    "aggregated_output",
+                    item.get("aggregatedOutput", item.get("output", "")),
+                )
+                exit_code = item.get("exit_code", item.get("exitCode"))
                 status = str(item.get("status", "")).lower()
                 item_error = item.get("error")
                 is_error = (
@@ -276,7 +338,69 @@ class StreamParser:
                     is_error=is_error,
                     raw_data=data,
                 )
-            return StreamMessage(type="item_completed", session_id=self.session_id, raw=data)
+            if item_type == "fileChange":
+                tool_id = str(item.get("id", "unknown"))
+                changes = item.get("changes", [])
+                content = f"Applied {len(changes)} file change(s)."
+                if changes:
+                    first = changes[0]
+                    content += f" First path: {first.get('path', 'unknown')}"
+                status = str(item.get("status", "")).lower()
+                return self._create_tool_result(
+                    tool_use_id=tool_id,
+                    content=content,
+                    is_error=status in {"failed", "error", "declined"},
+                    raw_data=data,
+                )
+            if item_type == "mcpToolCall":
+                tool_id = str(item.get("id", "unknown"))
+                status = str(item.get("status", "")).lower()
+                content = f"MCP {item.get('server', '')}/{item.get('tool', '')}: {status or 'completed'}"
+                if status == "failed" and item.get("error"):
+                    content += f"\n{item.get('error')}"
+                return self._create_tool_result(
+                    tool_use_id=tool_id,
+                    content=content,
+                    is_error=status in {"failed", "error"},
+                    raw_data=data,
+                )
+            if item_type == "webSearch":
+                tool_id = str(item.get("id", "unknown"))
+                action = item.get("action", {})
+                content = f"Web search query: {item.get('query', '')}"
+                if isinstance(action, dict) and action:
+                    content += f"\nAction: {action.get('type', 'other')}"
+                return self._create_tool_result(
+                    tool_use_id=tool_id,
+                    content=content,
+                    is_error=False,
+                    raw_data=data,
+                )
+            if item_type == "fuzzyFileSearch":
+                tool_id = str(item.get("id", "unknown"))
+                result_count = len(item.get("results", []))
+                content = f"Fuzzy file search returned {result_count} result(s)."
+                return self._create_tool_result(
+                    tool_use_id=tool_id,
+                    content=content,
+                    is_error=False,
+                    raw_data=data,
+                )
+            if item_type == "reasoning":
+                tool_id = str(item.get("id", "unknown"))
+                summary = item.get("summary", [])
+                summary_text = (
+                    "\n".join(summary) if isinstance(summary, list) else str(summary)
+                )
+                return self._create_tool_result(
+                    tool_use_id=tool_id,
+                    content=summary_text or "Reasoning complete.",
+                    is_error=False,
+                    raw_data=data,
+                )
+            return StreamMessage(
+                type="item_completed", session_id=self.session_id, raw=data
+            )
 
         elif event_type == "request_user_input":
             # App-server stream format: request for structured user input.
@@ -294,7 +418,11 @@ class StreamParser:
 
         elif event_type == "turn.failed":
             error_obj = data.get("error", {})
-            error_msg = error_obj.get("message") if isinstance(error_obj, dict) else str(error_obj)
+            error_msg = (
+                error_obj.get("message")
+                if isinstance(error_obj, dict)
+                else str(error_obj)
+            )
             return StreamMessage(
                 type="error",
                 content=str(error_msg or "Codex turn failed"),

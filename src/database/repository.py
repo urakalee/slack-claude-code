@@ -25,6 +25,12 @@ class DatabaseRepository:
                        (thread_ts = ? AND ? IS NOT NULL) OR
                        (thread_ts IS NULL AND ? IS NULL)
                    )"""
+    _QUEUE_SCOPE_WHERE = """channel_id = ? AND (
+                       (thread_ts = ? AND ? IS NOT NULL) OR
+                       (thread_ts IS NULL AND ? IS NULL)
+                   )"""
+    _QUEUE_ITEM_SELECT = """id, session_id, channel_id, thread_ts, prompt, status, output,
+                       error_message, position, message_ts, created_at, started_at, completed_at"""
 
     def __init__(self, db_path: str, timeout: float = DB_TIMEOUT):
         self.db_path = db_path
@@ -36,6 +42,13 @@ class DatabaseRepository:
         channel_id: str, thread_ts: Optional[str]
     ) -> tuple[Optional[str], ...]:
         """Return standard SQL parameters for channel/thread scoped session queries."""
+        return (channel_id, thread_ts, thread_ts, thread_ts)
+
+    @staticmethod
+    def _queue_scope_params(
+        channel_id: str, thread_ts: Optional[str]
+    ) -> tuple[Optional[str], ...]:
+        """Return standard SQL parameters for channel/thread scoped queue queries."""
         return (channel_id, thread_ts, thread_ts, thread_ts)
 
     def _get_connection(self) -> aiosqlite.Connection:
@@ -152,7 +165,9 @@ class DatabaseRepository:
                 )
             return Session.from_row(row)
 
-    async def update_session_cwd(self, channel_id: str, thread_ts: Optional[str], cwd: str) -> None:
+    async def update_session_cwd(
+        self, channel_id: str, thread_ts: Optional[str], cwd: str
+    ) -> None:
         """Update the working directory for a session."""
         async with self._transact() as db:
             await db.execute(
@@ -298,7 +313,9 @@ class DatabaseRepository:
                 )
             return current_dirs
 
-    async def clear_session_dirs(self, channel_id: str, thread_ts: Optional[str]) -> None:
+    async def clear_session_dirs(
+        self, channel_id: str, thread_ts: Optional[str]
+    ) -> None:
         """Clear all added directories from a session."""
         async with self._transact() as db:
             await db.execute(
@@ -334,7 +351,9 @@ class DatabaseRepository:
             row = await cursor.fetchone()
             return Session.from_row(row) if row else None
 
-    async def delete_session(self, channel_id: str, thread_ts: Optional[str] = None) -> bool:
+    async def delete_session(
+        self, channel_id: str, thread_ts: Optional[str] = None
+    ) -> bool:
         """Delete a specific session."""
         async with self._get_connection() as db:
             cursor = await db.execute(
@@ -431,7 +450,9 @@ class DatabaseRepository:
     async def get_command_by_id(self, command_id: int) -> Optional[CommandHistory]:
         """Get a specific command by ID."""
         async with self._get_connection() as db:
-            cursor = await db.execute("SELECT * FROM command_history WHERE id = ?", (command_id,))
+            cursor = await db.execute(
+                "SELECT * FROM command_history WHERE id = ?", (command_id,)
+            )
             row = await cursor.fetchone()
             return CommandHistory.from_row(row) if row else None
 
@@ -450,7 +471,14 @@ class DatabaseRepository:
                 """INSERT INTO parallel_jobs
                    (session_id, channel_id, job_type, config, results, message_ts, status)
                    VALUES (?, ?, ?, ?, ?, ?, 'pending')""",
-                (session_id, channel_id, job_type, json.dumps(config), "[]", message_ts),
+                (
+                    session_id,
+                    channel_id,
+                    job_type,
+                    json.dumps(config),
+                    "[]",
+                    message_ts,
+                ),
             )
             await db.commit()
 
@@ -502,11 +530,15 @@ class DatabaseRepository:
     async def get_parallel_job(self, job_id: int) -> Optional[ParallelJob]:
         """Get a parallel job by ID."""
         async with self._get_connection() as db:
-            cursor = await db.execute("SELECT * FROM parallel_jobs WHERE id = ?", (job_id,))
+            cursor = await db.execute(
+                "SELECT * FROM parallel_jobs WHERE id = ?", (job_id,)
+            )
             row = await cursor.fetchone()
             return ParallelJob.from_row(row) if row else None
 
-    async def get_active_jobs(self, channel_id: Optional[str] = None) -> list[ParallelJob]:
+    async def get_active_jobs(
+        self, channel_id: Optional[str] = None
+    ) -> list[ParallelJob]:
         """Get all active (pending/running) jobs, optionally filtered by channel."""
         async with self._get_connection() as db:
             if channel_id:
@@ -538,37 +570,50 @@ class DatabaseRepository:
             return cursor.rowcount > 0
 
     # Queue operations
-    async def add_to_queue(self, session_id: int, channel_id: str, prompt: str) -> QueueItem:
+    async def add_to_queue(
+        self,
+        session_id: int,
+        channel_id: str,
+        thread_ts: Optional[str],
+        prompt: str,
+    ) -> QueueItem:
         """Add a command to the FIFO queue."""
         async with self._get_connection() as db:
-            # Get next position for this channel
+            # Get next position for this channel/thread scope
             cursor = await db.execute(
                 """SELECT COALESCE(MAX(position), 0) + 1
-                   FROM queue_items WHERE channel_id = ?""",
-                (channel_id,),
+                   FROM queue_items WHERE """
+                + self._QUEUE_SCOPE_WHERE,
+                self._queue_scope_params(channel_id, thread_ts),
             )
             position = (await cursor.fetchone())[0]
 
             cursor = await db.execute(
                 """INSERT INTO queue_items
-                   (session_id, channel_id, prompt, position, status)
-                   VALUES (?, ?, ?, ?, 'pending')""",
-                (session_id, channel_id, prompt, position),
+                   (session_id, channel_id, thread_ts, prompt, position, status)
+                   VALUES (?, ?, ?, ?, ?, 'pending')""",
+                (session_id, channel_id, thread_ts, prompt, position),
             )
             await db.commit()
 
-            cursor = await db.execute("SELECT * FROM queue_items WHERE id = ?", (cursor.lastrowid,))
+            cursor = await db.execute(
+                f"SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE id = ?",
+                (cursor.lastrowid,),
+            )
             row = await cursor.fetchone()
             return QueueItem.from_row(row)
 
-    async def get_pending_queue_items(self, channel_id: str) -> list[QueueItem]:
-        """Get all pending queue items for a channel, ordered by position."""
+    async def get_pending_queue_items(
+        self, channel_id: str, thread_ts: Optional[str]
+    ) -> list[QueueItem]:
+        """Get all pending queue items for a session scope, ordered by position."""
         async with self._get_connection() as db:
             cursor = await db.execute(
-                """SELECT * FROM queue_items
-                   WHERE channel_id = ? AND status = 'pending'
+                f"""SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE """
+                + self._QUEUE_SCOPE_WHERE
+                + """ AND status = 'pending'
                    ORDER BY position ASC""",
-                (channel_id,),
+                self._queue_scope_params(channel_id, thread_ts),
             )
             rows = await cursor.fetchall()
             return [QueueItem.from_row(row) for row in rows]
@@ -576,7 +621,10 @@ class DatabaseRepository:
     async def get_queue_item(self, item_id: int) -> Optional[QueueItem]:
         """Get a queue item by ID."""
         async with self._get_connection() as db:
-            cursor = await db.execute("SELECT * FROM queue_items WHERE id = ?", (item_id,))
+            cursor = await db.execute(
+                f"SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE id = ?",
+                (item_id,),
+            )
             row = await cursor.fetchone()
             return QueueItem.from_row(row) if row else None
 
@@ -614,32 +662,50 @@ class DatabaseRepository:
                 )
             await db.commit()
 
-    async def remove_queue_item(self, item_id: int) -> bool:
-        """Remove a queue item (only if pending)."""
+    async def remove_queue_item(
+        self,
+        item_id: int,
+        channel_id: Optional[str] = None,
+        thread_ts: Optional[str] = None,
+    ) -> bool:
+        """Remove a queue item (only if pending), optionally constrained to scope."""
         async with self._get_connection() as db:
-            cursor = await db.execute(
-                "DELETE FROM queue_items WHERE id = ? AND status = 'pending'",
-                (item_id,),
-            )
+            if channel_id is None:
+                cursor = await db.execute(
+                    "DELETE FROM queue_items WHERE id = ? AND status = 'pending'",
+                    (item_id,),
+                )
+            else:
+                cursor = await db.execute(
+                    "DELETE FROM queue_items WHERE id = ? AND status = 'pending' AND "
+                    + self._QUEUE_SCOPE_WHERE,
+                    (item_id, *self._queue_scope_params(channel_id, thread_ts)),
+                )
             await db.commit()
             return cursor.rowcount > 0
 
-    async def clear_queue(self, channel_id: str) -> int:
-        """Clear all pending queue items for a channel."""
+    async def clear_queue(self, channel_id: str, thread_ts: Optional[str]) -> int:
+        """Clear all pending queue items for a session scope."""
         async with self._get_connection() as db:
             cursor = await db.execute(
-                "DELETE FROM queue_items WHERE channel_id = ? AND status = 'pending'",
-                (channel_id,),
+                "DELETE FROM queue_items WHERE "
+                + self._QUEUE_SCOPE_WHERE
+                + " AND status = 'pending'",
+                self._queue_scope_params(channel_id, thread_ts),
             )
             await db.commit()
             return cursor.rowcount
 
-    async def get_running_queue_item(self, channel_id: str) -> Optional[QueueItem]:
-        """Get the currently running queue item for a channel."""
+    async def get_running_queue_item(
+        self, channel_id: str, thread_ts: Optional[str]
+    ) -> Optional[QueueItem]:
+        """Get the currently running queue item for a session scope."""
         async with self._get_connection() as db:
             cursor = await db.execute(
-                "SELECT * FROM queue_items WHERE channel_id = ? AND status = 'running'",
-                (channel_id,),
+                f"SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE "
+                + self._QUEUE_SCOPE_WHERE
+                + " AND status = 'running'",
+                self._queue_scope_params(channel_id, thread_ts),
             )
             row = await cursor.fetchone()
             return QueueItem.from_row(row) if row else None
@@ -739,7 +805,9 @@ class DatabaseRepository:
             rows = await cursor.fetchall()
             return [GitCheckpoint.from_row(row) for row in rows]
 
-    async def get_checkpoint_by_name(self, channel_id: str, name: str) -> Optional[GitCheckpoint]:
+    async def get_checkpoint_by_name(
+        self, channel_id: str, name: str
+    ) -> Optional[GitCheckpoint]:
         """Get a specific checkpoint by name."""
         async with self._get_connection() as db:
             cursor = await db.execute(
@@ -755,7 +823,9 @@ class DatabaseRepository:
     async def delete_checkpoint(self, checkpoint_id: int) -> bool:
         """Delete a checkpoint."""
         async with self._get_connection() as db:
-            cursor = await db.execute("DELETE FROM git_checkpoints WHERE id = ?", (checkpoint_id,))
+            cursor = await db.execute(
+                "DELETE FROM git_checkpoints WHERE id = ?", (checkpoint_id,)
+            )
             await db.commit()
             return cursor.rowcount > 0
 
@@ -773,7 +843,9 @@ class DatabaseRepository:
     # Notification Settings
     # -------------------------------------------------------------------------
 
-    async def get_notification_settings(self, channel_id: str) -> "NotificationSettings":
+    async def get_notification_settings(
+        self, channel_id: str
+    ) -> "NotificationSettings":
         """
         Get notification settings for a channel.
 

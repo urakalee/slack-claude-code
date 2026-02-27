@@ -191,18 +191,30 @@ class TestParseModelEffort:
     def test_max_model_with_effort(self):
         """Handles models ending in -max correctly (not confused with effort)."""
         assert parse_model_effort("gpt-5.1-codex-max") == ("gpt-5.1-codex-max", None)
-        assert parse_model_effort("gpt-5.1-codex-max-high") == ("gpt-5.1-codex-max", "high")
-        assert parse_model_effort("gpt-5.1-codex-max-xhigh") == ("gpt-5.1-codex-max", "xhigh")
+        assert parse_model_effort("gpt-5.1-codex-max-high") == (
+            "gpt-5.1-codex-max",
+            "high",
+        )
+        assert parse_model_effort("gpt-5.1-codex-max-xhigh") == (
+            "gpt-5.1-codex-max",
+            "xhigh",
+        )
 
     def test_mini_model_with_effort(self):
         """Handles models ending in -mini correctly."""
         assert parse_model_effort("gpt-5.1-codex-mini") == ("gpt-5.1-codex-mini", None)
-        assert parse_model_effort("gpt-5.1-codex-mini-low") == ("gpt-5.1-codex-mini", "low")
+        assert parse_model_effort("gpt-5.1-codex-mini-low") == (
+            "gpt-5.1-codex-mini",
+            "low",
+        )
 
     def test_case_insensitive(self):
         """Parsing is case-insensitive."""
         assert parse_model_effort("GPT-5.3-CODEX-HIGH") == ("GPT-5.3-CODEX", "high")
-        assert parse_model_effort("GPT-5.3-CODEX-EXTRA-HIGH") == ("GPT-5.3-CODEX", "xhigh")
+        assert parse_model_effort("GPT-5.3-CODEX-EXTRA-HIGH") == (
+            "GPT-5.3-CODEX",
+            "xhigh",
+        )
 
 
 class TestSupportedCodexModels:
@@ -335,6 +347,7 @@ class TestQueueItem:
             10,  # id
             1,  # session_id
             "C123",  # channel_id
+            "123.456",  # thread_ts
             "analyze this code",  # prompt
             "running",  # status
             "partial output",  # output
@@ -349,6 +362,7 @@ class TestQueueItem:
         item = QueueItem.from_row(row)
 
         assert item.id == 10
+        assert item.thread_ts == "123.456"
         assert item.prompt == "analyze this code"
         assert item.status == "running"
         assert item.position == 5
@@ -419,7 +433,17 @@ class TestGitCheckpoint:
 
     def test_from_row_auto_checkpoint(self):
         """from_row handles auto checkpoints correctly."""
-        row = (1, 1, "C123", "auto-save", "stash@{1}", None, None, "2024-01-15T10:30:00", 1)
+        row = (
+            1,
+            1,
+            "C123",
+            "auto-save",
+            "stash@{1}",
+            None,
+            None,
+            "2024-01-15T10:30:00",
+            1,
+        )
 
         checkpoint = GitCheckpoint.from_row(row)
 

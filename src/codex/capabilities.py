@@ -32,10 +32,8 @@ CLAUDE_ONLY_SLASH_COMMANDS: tuple[str, ...] = (
     "/context",
     "/init",
     "/memory",
-    "/review",
     "/stats",
     "/todos",
-    "/mcp",
 )
 
 _CLAUDE_TO_CODEX_HINTS: dict[str, str] = {
@@ -47,10 +45,8 @@ _CLAUDE_TO_CODEX_HINTS: dict[str, str] = {
     "/context": "Use Slack thread history and `/codex-status`.",
     "/init": "Codex does not provide `/init` in this Slack integration.",
     "/memory": "Codex does not use CLAUDE.md memory files.",
-    "/review": "Ask for review directly in chat.",
     "/stats": "Stats command is not exposed for Codex in Slack mode.",
     "/todos": "Use normal prompts to manage TODO tracking.",
-    "/mcp": "MCP config is not exposed via Codex Slack passthrough yet.",
 }
 
 _COMPAT_TO_APPROVAL: dict[str, str] = {
@@ -60,7 +56,9 @@ _COMPAT_TO_APPROVAL: dict[str, str] = {
 }
 
 _UNSUPPORTED_COMPAT_MODE_MESSAGES: dict[str, str] = {
-    "accept": ("`/mode accept` maps to Claude file-edit approvals and has no Codex equivalent."),
+    "accept": (
+        "`/mode accept` maps to Claude file-edit approvals and has no Codex equivalent."
+    ),
     "delegate": ("`/mode delegate` is Claude-specific and has no Codex equivalent."),
 }
 

@@ -38,7 +38,9 @@ class TestSessionOperations:
         assert session1.id == session2.id
 
     @pytest.mark.asyncio
-    async def test_get_or_create_session_channel_level_does_not_duplicate(self, db_repo):
+    async def test_get_or_create_session_channel_level_does_not_duplicate(
+        self, db_repo
+    ):
         """Channel-level sessions should reuse one row even with thread_ts=None."""
         session1 = await db_repo.get_or_create_session("C123ABC", None)
         session2 = await db_repo.get_or_create_session("C123ABC", None)
@@ -91,7 +93,9 @@ class TestSessionOperations:
     async def test_get_or_create_session_thread_isolation(self, db_repo):
         """Different threads get different sessions."""
         channel_session = await db_repo.get_or_create_session("C123ABC", None)
-        thread_session = await db_repo.get_or_create_session("C123ABC", "1234567890.123456")
+        thread_session = await db_repo.get_or_create_session(
+            "C123ABC", "1234567890.123456"
+        )
 
         assert channel_session.id != thread_session.id
         assert channel_session.thread_ts is None
@@ -221,7 +225,9 @@ class TestCommandHistoryOperations:
         """update_command_status updates to failed with error."""
         session = await db_repo.get_or_create_session("C123ABC", None)
         cmd = await db_repo.add_command(session.id, "test")
-        await db_repo.update_command_status(cmd.id, "failed", error_message="Something broke")
+        await db_repo.update_command_status(
+            cmd.id, "failed", error_message="Something broke"
+        )
 
         updated = await db_repo.get_command_by_id(cmd.id)
         assert updated.status == "failed"
@@ -247,7 +253,9 @@ class TestCommandHistoryOperations:
             await db_repo.add_command(session.id, f"command {i}")
 
         # Get first page
-        history, total = await db_repo.get_command_history(session.id, limit=5, offset=0)
+        history, total = await db_repo.get_command_history(
+            session.id, limit=5, offset=0
+        )
         assert len(history) == 5
         assert total == 15
 
@@ -269,7 +277,7 @@ class TestQueueOperations:
     async def test_add_to_queue(self, db_repo):
         """add_to_queue creates queue item."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item = await db_repo.add_to_queue(session.id, "C123ABC", "analyze code")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", None, "analyze code")
 
         assert item.id is not None
         assert item.prompt == "analyze code"
@@ -280,9 +288,9 @@ class TestQueueOperations:
     async def test_add_to_queue_auto_position(self, db_repo):
         """add_to_queue auto-increments position."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item1 = await db_repo.add_to_queue(session.id, "C123ABC", "first")
-        item2 = await db_repo.add_to_queue(session.id, "C123ABC", "second")
-        item3 = await db_repo.add_to_queue(session.id, "C123ABC", "third")
+        item1 = await db_repo.add_to_queue(session.id, "C123ABC", None, "first")
+        item2 = await db_repo.add_to_queue(session.id, "C123ABC", None, "second")
+        item3 = await db_repo.add_to_queue(session.id, "C123ABC", None, "third")
 
         assert item1.position == 1
         assert item2.position == 2
@@ -292,10 +300,10 @@ class TestQueueOperations:
     async def test_get_pending_queue_items(self, db_repo):
         """get_pending_queue_items returns pending items in order."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        await db_repo.add_to_queue(session.id, "C123ABC", "first")
-        await db_repo.add_to_queue(session.id, "C123ABC", "second")
+        await db_repo.add_to_queue(session.id, "C123ABC", None, "first")
+        await db_repo.add_to_queue(session.id, "C123ABC", None, "second")
 
-        pending = await db_repo.get_pending_queue_items("C123ABC")
+        pending = await db_repo.get_pending_queue_items("C123ABC", None)
 
         assert len(pending) == 2
         assert pending[0].prompt == "first"
@@ -305,7 +313,7 @@ class TestQueueOperations:
     async def test_update_queue_item_status_running(self, db_repo):
         """update_queue_item_status sets started_at for running."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item = await db_repo.add_to_queue(session.id, "C123ABC", "test")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", None, "test")
         await db_repo.update_queue_item_status(item.id, "running")
 
         updated = await db_repo.get_queue_item(item.id)
@@ -316,7 +324,7 @@ class TestQueueOperations:
     async def test_update_queue_item_status_completed(self, db_repo):
         """update_queue_item_status sets completed_at for completed."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item = await db_repo.add_to_queue(session.id, "C123ABC", "test")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", None, "test")
         await db_repo.update_queue_item_status(item.id, "completed", output="Done!")
 
         updated = await db_repo.get_queue_item(item.id)
@@ -328,7 +336,7 @@ class TestQueueOperations:
     async def test_remove_queue_item(self, db_repo):
         """remove_queue_item removes pending item."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item = await db_repo.add_to_queue(session.id, "C123ABC", "test")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", None, "test")
         result = await db_repo.remove_queue_item(item.id)
 
         assert result is True
@@ -338,34 +346,46 @@ class TestQueueOperations:
     async def test_remove_queue_item_not_pending(self, db_repo):
         """remove_queue_item only removes pending items."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item = await db_repo.add_to_queue(session.id, "C123ABC", "test")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", None, "test")
         await db_repo.update_queue_item_status(item.id, "running")
 
         result = await db_repo.remove_queue_item(item.id)
         assert result is False  # Can't remove running item
 
     @pytest.mark.asyncio
+    async def test_remove_queue_item_respects_scope(self, db_repo):
+        """remove_queue_item scoped delete only affects matching channel/thread."""
+        session = await db_repo.get_or_create_session("C123ABC", "123.456")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", "123.456", "test")
+
+        wrong_scope = await db_repo.remove_queue_item(item.id, "C123ABC", None)
+        right_scope = await db_repo.remove_queue_item(item.id, "C123ABC", "123.456")
+
+        assert wrong_scope is False
+        assert right_scope is True
+
+    @pytest.mark.asyncio
     async def test_clear_queue(self, db_repo):
         """clear_queue removes all pending items."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        await db_repo.add_to_queue(session.id, "C123ABC", "first")
-        await db_repo.add_to_queue(session.id, "C123ABC", "second")
-        await db_repo.add_to_queue(session.id, "C123ABC", "third")
+        await db_repo.add_to_queue(session.id, "C123ABC", None, "first")
+        await db_repo.add_to_queue(session.id, "C123ABC", None, "second")
+        await db_repo.add_to_queue(session.id, "C123ABC", None, "third")
 
-        count = await db_repo.clear_queue("C123ABC")
+        count = await db_repo.clear_queue("C123ABC", None)
 
         assert count == 3
-        pending = await db_repo.get_pending_queue_items("C123ABC")
+        pending = await db_repo.get_pending_queue_items("C123ABC", None)
         assert len(pending) == 0
 
     @pytest.mark.asyncio
     async def test_get_running_queue_item(self, db_repo):
         """get_running_queue_item returns currently running item."""
         session = await db_repo.get_or_create_session("C123ABC", None)
-        item = await db_repo.add_to_queue(session.id, "C123ABC", "running task")
+        item = await db_repo.add_to_queue(session.id, "C123ABC", None, "running task")
         await db_repo.update_queue_item_status(item.id, "running")
 
-        running = await db_repo.get_running_queue_item("C123ABC")
+        running = await db_repo.get_running_queue_item("C123ABC", None)
 
         assert running is not None
         assert running.id == item.id
@@ -373,8 +393,26 @@ class TestQueueOperations:
     @pytest.mark.asyncio
     async def test_get_running_queue_item_none(self, db_repo):
         """get_running_queue_item returns None when nothing running."""
-        result = await db_repo.get_running_queue_item("C123ABC")
+        result = await db_repo.get_running_queue_item("C123ABC", None)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_queue_scope_isolated_by_thread(self, db_repo):
+        """Queue items in channel and thread scopes should not overlap."""
+        channel_session = await db_repo.get_or_create_session("C123ABC", None)
+        thread_session = await db_repo.get_or_create_session("C123ABC", "123.456")
+        await db_repo.add_to_queue(channel_session.id, "C123ABC", None, "channel item")
+        await db_repo.add_to_queue(
+            thread_session.id, "C123ABC", "123.456", "thread item"
+        )
+
+        channel_pending = await db_repo.get_pending_queue_items("C123ABC", None)
+        thread_pending = await db_repo.get_pending_queue_items("C123ABC", "123.456")
+
+        assert len(channel_pending) == 1
+        assert channel_pending[0].prompt == "channel item"
+        assert len(thread_pending) == 1
+        assert thread_pending[0].prompt == "thread item"
 
 
 class TestParallelJobOperations:
@@ -385,7 +423,9 @@ class TestParallelJobOperations:
         """create_parallel_job creates a job."""
         session = await db_repo.get_or_create_session("C123ABC", None)
         config = {"n_instances": 3, "commands": ["cmd1", "cmd2"]}
-        job = await db_repo.create_parallel_job(session.id, "C123ABC", "parallel_analysis", config)
+        job = await db_repo.create_parallel_job(
+            session.id, "C123ABC", "parallel_analysis", config
+        )
 
         assert job.id is not None
         assert job.job_type == "parallel_analysis"
@@ -528,7 +568,9 @@ class TestGitCheckpointOperations:
         """get_checkpoints excludes auto checkpoints by default."""
         session = await db_repo.get_or_create_session("C123ABC", None)
         await db_repo.create_checkpoint(session.id, "C123ABC", "manual", "stash@{0}")
-        await db_repo.create_checkpoint(session.id, "C123ABC", "auto", "stash@{1}", is_auto=True)
+        await db_repo.create_checkpoint(
+            session.id, "C123ABC", "auto", "stash@{1}", is_auto=True
+        )
 
         checkpoints = await db_repo.get_checkpoints("C123ABC", include_auto=False)
 
@@ -564,8 +606,12 @@ class TestGitCheckpointOperations:
         """delete_auto_checkpoints removes only auto checkpoints."""
         session = await db_repo.get_or_create_session("C123ABC", None)
         await db_repo.create_checkpoint(session.id, "C123ABC", "manual", "stash@{0}")
-        await db_repo.create_checkpoint(session.id, "C123ABC", "auto1", "stash@{1}", is_auto=True)
-        await db_repo.create_checkpoint(session.id, "C123ABC", "auto2", "stash@{2}", is_auto=True)
+        await db_repo.create_checkpoint(
+            session.id, "C123ABC", "auto1", "stash@{1}", is_auto=True
+        )
+        await db_repo.create_checkpoint(
+            session.id, "C123ABC", "auto2", "stash@{2}", is_auto=True
+        )
 
         count = await db_repo.delete_auto_checkpoints("C123ABC")
 

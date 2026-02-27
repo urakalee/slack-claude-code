@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS queue_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
     channel_id TEXT NOT NULL,
+    thread_ts TEXT DEFAULT NULL,
     prompt TEXT NOT NULL,
     status TEXT DEFAULT 'pending',
     output TEXT,
@@ -117,6 +118,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON parallel_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_queue_items_status ON queue_items(status);
 CREATE INDEX IF NOT EXISTS idx_queue_items_channel ON queue_items(channel_id);
 CREATE INDEX IF NOT EXISTS idx_queue_items_position ON queue_items(channel_id, position);
+CREATE INDEX IF NOT EXISTS idx_queue_items_scope_status ON queue_items(channel_id, thread_ts, status);
+CREATE INDEX IF NOT EXISTS idx_queue_items_scope_position ON queue_items(channel_id, thread_ts, position);
 CREATE INDEX IF NOT EXISTS idx_uploaded_files_session ON uploaded_files(session_id);
 CREATE INDEX IF NOT EXISTS idx_git_checkpoints_channel ON git_checkpoints(channel_id);
 CREATE INDEX IF NOT EXISTS idx_git_checkpoints_session ON git_checkpoints(session_id);
@@ -152,7 +155,9 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     # Add Codex-specific columns if they don't exist
     if "codex_session_id" not in column_names:
-        await db.execute("ALTER TABLE sessions ADD COLUMN codex_session_id TEXT DEFAULT NULL")
+        await db.execute(
+            "ALTER TABLE sessions ADD COLUMN codex_session_id TEXT DEFAULT NULL"
+        )
         await db.commit()
 
     if "sandbox_mode" not in column_names:
@@ -167,6 +172,24 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         )
         await db.commit()
 
+    # Add queue_items.thread_ts for thread-scoped queueing
+    queue_cursor = await db.execute("PRAGMA table_info(queue_items)")
+    queue_columns = await queue_cursor.fetchall()
+    queue_column_names = [col[1] for col in queue_columns]
+    if "thread_ts" not in queue_column_names:
+        await db.execute(
+            "ALTER TABLE queue_items ADD COLUMN thread_ts TEXT DEFAULT NULL"
+        )
+        await db.commit()
+
+    # Ensure queue scope indexes exist for channel+thread isolation
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_queue_items_scope_status ON queue_items(channel_id, thread_ts, status)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_queue_items_scope_position ON queue_items(channel_id, thread_ts, position)"
+    )
+    await db.commit()
 
 
 async def reset_database(db_path: str) -> None:

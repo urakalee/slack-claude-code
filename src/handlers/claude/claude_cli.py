@@ -76,10 +76,14 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             Handler dependencies.
         """
         session = await deps.db.get_or_create_session(
-            ctx.channel_id, thread_ts=ctx.thread_ts, default_cwd=config.DEFAULT_WORKING_DIR
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
         )
         command_name = claude_command.strip().split(" ", 1)[0]
-        if session.get_backend() == "codex" and is_claude_only_slash_command(command_name):
+        if session.get_backend() == "codex" and is_claude_only_slash_command(
+            command_name
+        ):
             hint = get_codex_hint_for_claude_command(command_name)
             await ctx.client.chat_postMessage(
                 channel=ctx.channel_id,
@@ -195,7 +199,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         if cancelled_count > 0:
             message = f"Cancelled {cancelled_count} active process(es) and cleared conversation."
         else:
-            message = "Conversation cleared. Your next message will start a fresh session."
+            message = (
+                "Conversation cleared. Your next message will start a fresh session."
+            )
 
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
@@ -252,11 +258,15 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             return
 
         await deps.db.get_or_create_session(
-            ctx.channel_id, thread_ts=ctx.thread_ts, default_cwd=config.DEFAULT_WORKING_DIR
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
         )
 
         # Add resolved directory to session's added_dirs list
-        added_dirs = await deps.db.add_session_dir(ctx.channel_id, ctx.thread_ts, str(resolved_dir))
+        added_dirs = await deps.db.add_session_dir(
+            ctx.channel_id, ctx.thread_ts, str(resolved_dir)
+        )
 
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
@@ -313,7 +323,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             return
 
         # Remove directory from session's added_dirs list
-        remaining_dirs = await deps.db.remove_session_dir(ctx.channel_id, ctx.thread_ts, directory)
+        remaining_dirs = await deps.db.remove_session_dir(
+            ctx.channel_id, ctx.thread_ts, directory
+        )
 
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
@@ -347,7 +359,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
 
         # Get working directory for context
         session = await deps.db.get_or_create_session(
-            ctx.channel_id, thread_ts=ctx.thread_ts, default_cwd=config.DEFAULT_WORKING_DIR
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
         )
 
         await ctx.client.chat_postMessage(
@@ -404,7 +418,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
 
     @app.command("/claude-config")
     @slack_command()
-    async def handle_claude_config(ctx: CommandContext, deps: HandlerDependencies = deps):
+    async def handle_claude_config(
+        ctx: CommandContext, deps: HandlerDependencies = deps
+    ):
         """Handle /claude-config command - show Claude Code config."""
         await _send_claude_command(ctx, "/config", deps)
 
@@ -420,7 +436,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         """Handle /model [name] command - show or change AI model."""
         # Get session to check/update model
         session = await deps.db.get_or_create_session(
-            ctx.channel_id, thread_ts=ctx.thread_ts, default_cwd=config.DEFAULT_WORKING_DIR
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
         )
         claude_model_display: dict[str | None, str] = {
             None: "Default (recommended)",
@@ -503,7 +521,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
 
             backend = get_backend_for_model(normalized)
 
-            await deps.db.update_session_model(ctx.channel_id, ctx.thread_ts, normalized)
+            await deps.db.update_session_model(
+                ctx.channel_id, ctx.thread_ts, normalized
+            )
 
             backend_label = "Claude Code" if backend == "claude" else "OpenAI Codex"
             selected_display = claude_model_display.get(
@@ -631,14 +651,20 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             # Get display name for current model
             all_models = claude_models + codex_models
             current_display = next(
-                (m["display"] for m in all_models if m["value"] == normalized_current_model),
+                (
+                    m["display"]
+                    for m in all_models
+                    if m["value"] == normalized_current_model
+                ),
                 claude_model_display.get(
                     normalized_current_model,
                     normalized_current_model or "Default (recommended)",
                 ),
             )
 
-            backend_label = "Claude Code" if current_backend == "claude" else "OpenAI Codex"
+            backend_label = (
+                "Claude Code" if current_backend == "claude" else "OpenAI Codex"
+            )
 
             # Build button blocks
             blocks = [
@@ -782,6 +808,71 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
     @slack_command()
     async def handle_review(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /review command - request code review."""
+        session = await deps.db.get_or_create_session(
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
+        )
+        if session.get_backend() == "codex":
+            if not deps.codex_executor:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Codex executor is not configured.",
+                    blocks=error_message("Codex executor is not configured."),
+                )
+                return
+            if not session.codex_session_id:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="No active Codex session.",
+                    blocks=error_message(
+                        "No active Codex thread for this session yet. Send a Codex message first."
+                    ),
+                )
+                return
+
+            target: dict
+            if ctx.text:
+                target = {"type": "custom", "instructions": ctx.text}
+            else:
+                target = {"type": "uncommittedChanges"}
+
+            try:
+                result = await deps.codex_executor.review_start(
+                    thread_id=session.codex_session_id,
+                    target=target,
+                    working_directory=session.working_directory,
+                )
+                review_thread_id = result.get("reviewThreadId")
+                turn = result.get("turn", {})
+                turn_id = turn.get("id", "unknown")
+                review_summary = (
+                    f":mag: Started Codex review for thread `{session.codex_session_id}`.\n"
+                    f"Turn: `{turn_id}`"
+                )
+                if review_thread_id:
+                    review_summary += f"\nReview thread: `{review_thread_id}`"
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Codex review started",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": review_summary},
+                        }
+                    ],
+                )
+            except Exception as e:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text=f"Failed to start review: {e}",
+                    blocks=error_message(str(e)),
+                )
+            return
         await _send_claude_command(ctx, "/review", deps)
 
     @app.command("/permissions")
@@ -792,7 +883,9 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         # In print mode, slash commands get interpreted as skill invocations.
         # Show info about how to manage permissions in Slack mode.
         session = await deps.db.get_or_create_session(
-            ctx.channel_id, thread_ts=ctx.thread_ts, default_cwd=config.DEFAULT_WORKING_DIR
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
         )
         if session.get_backend() == "codex":
             current_approval = normalize_codex_approval_mode(
@@ -887,6 +980,54 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
     @slack_command()
     async def handle_mcp(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /mcp command - show MCP server configuration."""
+        session = await deps.db.get_or_create_session(
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
+        )
+        if session.get_backend() == "codex":
+            if not deps.codex_executor:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Codex executor is not configured.",
+                    blocks=error_message("Codex executor is not configured."),
+                )
+                return
+            try:
+                status = await deps.codex_executor.mcp_server_status_list(
+                    session.working_directory
+                )
+                servers = status.get("data", [])
+                if not servers:
+                    summary = "No MCP servers detected."
+                else:
+                    lines = []
+                    for server in servers[:10]:
+                        name = server.get("name", "unknown")
+                        auth_status = server.get("authStatus", "unknown")
+                        tools = server.get("tools", {})
+                        resources = server.get("resources", [])
+                        lines.append(
+                            f"• *{name}*\nauth: `{auth_status}` • tools: `{len(tools)}` • resources: `{len(resources)}`"
+                        )
+                    summary = "*Codex MCP Servers*\n" + "\n\n".join(lines)
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Codex MCP status",
+                    blocks=[
+                        {"type": "section", "text": {"type": "mrkdwn", "text": summary}}
+                    ],
+                )
+            except Exception as e:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text=f"Failed to load MCP status: {e}",
+                    blocks=error_message(str(e)),
+                )
+            return
         if ctx.text:
             await _send_claude_command(ctx, f"/mcp {ctx.text}", deps)
         else:

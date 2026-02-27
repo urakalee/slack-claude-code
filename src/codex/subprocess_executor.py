@@ -3,7 +3,7 @@
 import asyncio
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
@@ -39,6 +39,38 @@ class ExecutionResult:
     was_cancelled: bool = False
 
 
+@dataclass
+class TurnControlResult:
+    """Result for steer/interrupt control requests sent to active turns."""
+
+    success: bool
+    message: str = ""
+    error: Optional[str] = None
+    turn_id: Optional[str] = None
+
+
+@dataclass
+class _ControlRequest:
+    """Internal request queued to an active turn execution loop."""
+
+    kind: str  # "steer" | "interrupt"
+    future: asyncio.Future[TurnControlResult]
+    text: Optional[str] = None
+
+
+@dataclass
+class _ActiveTurnState:
+    """Live app-server turn metadata for steer/interrupt routing."""
+
+    scope: str
+    track_id: str
+    thread_id: str
+    turn_id: str
+    control_queue: asyncio.Queue[_ControlRequest]
+    done_event: asyncio.Event = field(default_factory=asyncio.Event)
+    started_at: float = field(default_factory=time.monotonic)
+
+
 class SubprocessExecutor:
     """Execute Codex via `codex app-server` JSON-RPC over stdio."""
 
@@ -50,6 +82,8 @@ class SubprocessExecutor:
         self._process_channels: dict[str, str] = {}  # track_id -> channel_id
         self._process_scopes: dict[str, str] = {}  # track_id -> session_scope
         self._execution_track_ids: dict[str, str] = {}  # execution_id -> track_id
+        self._active_turns_by_scope: dict[str, _ActiveTurnState] = {}
+        self._active_turns_by_track: dict[str, _ActiveTurnState] = {}
         self._lock: asyncio.Lock = asyncio.Lock()
         self.db = db
 
@@ -61,8 +95,12 @@ class SubprocessExecutor:
         resume_session_id: Optional[str] = None,
         execution_id: Optional[str] = None,
         on_chunk: Optional[Callable[[StreamMessage], Awaitable[None]]] = None,
-        on_user_input_request: Optional[Callable[[str, dict], Awaitable[Optional[dict]]]] = None,
-        on_approval_request: Optional[Callable[[str, dict], Awaitable[Optional[dict]]]] = None,
+        on_user_input_request: Optional[
+            Callable[[str, dict], Awaitable[Optional[dict]]]
+        ] = None,
+        on_approval_request: Optional[
+            Callable[[str, dict], Awaitable[Optional[dict]]]
+        ] = None,
         sandbox_mode: Optional[str] = None,
         approval_mode: Optional[str] = None,
         db_session_id: Optional[int] = None,
@@ -134,7 +172,9 @@ class SubprocessExecutor:
         resume_session_id: Optional[str],
         execution_id: Optional[str],
         on_chunk: Optional[Callable[[StreamMessage], Awaitable[None]]],
-        on_user_input_request: Optional[Callable[[str, dict], Awaitable[Optional[dict]]]],
+        on_user_input_request: Optional[
+            Callable[[str, dict], Awaitable[Optional[dict]]]
+        ],
         on_approval_request: Optional[Callable[[str, dict], Awaitable[Optional[dict]]]],
         sandbox_mode: Optional[str],
         approval_mode: Optional[str],
@@ -191,6 +231,10 @@ class SubprocessExecutor:
         started_at = time.monotonic()
         next_request_id = 1
         response_cache: dict[str, dict] = {}
+        pending_control_responses: dict[str, _ControlRequest] = {}
+        control_queue: asyncio.Queue[_ControlRequest] = asyncio.Queue()
+        active_turn_state: Optional[_ActiveTurnState] = None
+        current_turn_id: Optional[str] = None
 
         if model:
             base_model, effort = parse_model_effort(model)
@@ -222,7 +266,9 @@ class SubprocessExecutor:
             nonlocal cost_usd, duration_ms, error_msg
 
             if msg.type == "assistant" and msg.content:
-                preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                preview = (
+                    msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                )
                 logger.debug(f"{log_prefix}Codex: {preview}")
             elif msg.type == "tool_call":
                 for tool in msg.tool_activities:
@@ -238,14 +284,20 @@ class SubprocessExecutor:
             elif msg.type == "error":
                 logger.error(f"{log_prefix}Error: {msg.content}")
             elif msg.type == "result":
-                duration_display = msg.duration_ms if msg.duration_ms is not None else "?"
-                logger.info(f"{log_prefix}Codex Finished - completed in {duration_display}ms")
+                duration_display = (
+                    msg.duration_ms if msg.duration_ms is not None else "?"
+                )
+                logger.info(
+                    f"{log_prefix}Codex Finished - completed in {duration_display}ms"
+                )
 
             if msg.session_id:
                 result_session_id = msg.session_id
 
             if msg.type == "assistant" and msg.content:
-                accumulated_output = concat_with_spacing(accumulated_output, msg.content)
+                accumulated_output = concat_with_spacing(
+                    accumulated_output, msg.content
+                )
 
             if msg.type == "result":
                 cost_usd = msg.cost_usd
@@ -281,7 +333,7 @@ class SubprocessExecutor:
             return False
 
         async def handle_notification(method: str, params: dict) -> bool:
-            nonlocal result_session_id
+            nonlocal result_session_id, current_turn_id
 
             if method == "thread/started":
                 thread = params.get("thread", {})
@@ -289,69 +341,63 @@ class SubprocessExecutor:
                 if thread_id:
                     result_session_id = str(thread_id)
                     msg = parser.parse_line(
-                        json.dumps({"type": "thread.started", "thread_id": str(thread_id)})
+                        json.dumps(
+                            {"type": "thread.started", "thread_id": str(thread_id)}
+                        )
                     )
                     if msg:
                         return await handle_stream_message(msg)
                 return False
 
+            if method == "turn/started":
+                turn = params.get("turn", {})
+                turn_id = turn.get("id")
+                if turn_id:
+                    current_turn_id = str(turn_id)
+                    if active_turn_state:
+                        active_turn_state.turn_id = current_turn_id
+                msg = parser.parse_line(json.dumps({"type": "turn.started"}))
+                if msg:
+                    await handle_stream_message(msg)
+                return False
+
             if method in {"item/agentMessage/delta", "item/plan/delta"}:
+                return await emit_assistant_delta(str(params.get("delta", "")))
+
+            if method in {
+                "item/reasoning/textDelta",
+                "item/reasoning/summaryTextDelta",
+                "item/reasoning/summaryPartAdded",
+            }:
+                # Keep deltas visible in streaming output for better live progress.
                 return await emit_assistant_delta(str(params.get("delta", "")))
 
             if method == "item/started":
                 item = params.get("item", {})
-                if item.get("type") == "commandExecution":
-                    synthetic = {
-                        "type": "item.started",
-                        "item": {
-                            "id": item.get("id"),
-                            "type": "command_execution",
-                            "command": item.get("command", ""),
-                            "status": item.get("status", ""),
-                        },
-                    }
-                    msg = parser.parse_line(json.dumps(synthetic))
-                    if msg:
-                        return await handle_stream_message(msg)
+                synthetic = {"type": "item.started", "item": item}
+                msg = parser.parse_line(json.dumps(synthetic))
+                if msg:
+                    return await handle_stream_message(msg)
                 return False
 
             if method == "item/completed":
                 item = params.get("item", {})
-                item_type = item.get("type")
-                if item_type == "agentMessage":
-                    synthetic = {
-                        "type": "item.completed",
-                        "item": {
-                            "id": item.get("id"),
-                            "type": "agent_message",
-                            "text": item.get("text", ""),
-                        },
-                    }
-                    msg = parser.parse_line(json.dumps(synthetic))
-                    if msg:
-                        return await handle_stream_message(msg)
-                    return False
+                synthetic = {"type": "item.completed", "item": item}
+                msg = parser.parse_line(json.dumps(synthetic))
+                if msg:
+                    return await handle_stream_message(msg)
+                return False
 
-                if item_type == "commandExecution":
-                    synthetic = {
-                        "type": "item.completed",
-                        "item": {
-                            "id": item.get("id"),
-                            "type": "command_execution",
-                            "aggregated_output": item.get("aggregatedOutput", ""),
-                            "exit_code": item.get("exitCode"),
-                            "status": (item.get("status") or "").lower(),
-                            "error": item.get("error"),
-                        },
-                    }
-                    msg = parser.parse_line(json.dumps(synthetic))
-                    if msg:
-                        return await handle_stream_message(msg)
+            if method in {"turn/plan/updated", "turn/diff/updated"}:
+                delta = params.get("diff") or params.get("text") or ""
+                if delta:
+                    return await emit_assistant_delta(str(delta))
                 return False
 
             if method == "turn/completed":
                 turn = params.get("turn", {})
                 status = str(turn.get("status", "")).lower()
+                current_turn_id = None
                 if status in {"failed", "interrupted"}:
                     turn_error = turn.get("error", {})
                     error_text = (
@@ -360,14 +406,18 @@ class SubprocessExecutor:
                         else str(turn_error or "Codex turn failed")
                     )
                     msg = parser.parse_line(
-                        json.dumps({"type": "turn.failed", "error": {"message": error_text}})
+                        json.dumps(
+                            {"type": "turn.failed", "error": {"message": error_text}}
+                        )
                     )
                 else:
                     msg = parser.parse_line(
                         json.dumps(
                             {
                                 "type": "turn.completed",
-                                "duration_ms": int((time.monotonic() - started_at) * 1000),
+                                "duration_ms": int(
+                                    (time.monotonic() - started_at) * 1000
+                                ),
                             }
                         )
                     )
@@ -479,10 +529,97 @@ class SubprocessExecutor:
                 }
             )
 
+        async def handle_control_request(request: _ControlRequest) -> None:
+            """Queue steer/interrupt RPC calls for the active turn."""
+            if request.kind == "steer":
+                if not result_session_id or not current_turn_id:
+                    if not request.future.done():
+                        request.future.set_result(
+                            TurnControlResult(
+                                success=False,
+                                error="No active turn available for steer",
+                                turn_id=current_turn_id,
+                            )
+                        )
+                    return
+                steer_input = request.text or ""
+                request_id = await send_request(
+                    "turn/steer",
+                    {
+                        "threadId": result_session_id,
+                        "expectedTurnId": current_turn_id,
+                        "input": [{"type": "text", "text": steer_input}],
+                    },
+                )
+                pending_control_responses[str(request_id)] = request
+                return
+
+            if request.kind == "interrupt":
+                if not result_session_id or not current_turn_id:
+                    if not request.future.done():
+                        request.future.set_result(
+                            TurnControlResult(
+                                success=False,
+                                error="No active turn available for interrupt",
+                                turn_id=current_turn_id,
+                            )
+                        )
+                    return
+                request_id = await send_request(
+                    "turn/interrupt",
+                    {
+                        "threadId": result_session_id,
+                        "turnId": current_turn_id,
+                    },
+                )
+                pending_control_responses[str(request_id)] = request
+                return
+
+            if not request.future.done():
+                request.future.set_result(
+                    TurnControlResult(
+                        success=False, error=f"Unsupported control kind: {request.kind}"
+                    )
+                )
+
         async def process_rpc_message(rpc: dict) -> bool:
             response_id = rpc.get("id")
             if response_id is not None and ("result" in rpc or "error" in rpc):
-                response_cache[str(response_id)] = rpc
+                cache_key = str(response_id)
+                control_request = pending_control_responses.pop(cache_key, None)
+                if control_request:
+                    if not control_request.future.done():
+                        if rpc.get("error"):
+                            control_request.future.set_result(
+                                TurnControlResult(
+                                    success=False,
+                                    error=str(rpc.get("error")),
+                                    turn_id=current_turn_id,
+                                )
+                            )
+                        else:
+                            result_payload = rpc.get("result", {})
+                            turn_id = result_payload.get("turnId") or current_turn_id
+                            if turn_id:
+                                if active_turn_state:
+                                    active_turn_state.turn_id = str(turn_id)
+                                control_request.future.set_result(
+                                    TurnControlResult(
+                                        success=True,
+                                        message=f"{control_request.kind} accepted",
+                                        turn_id=str(turn_id),
+                                    )
+                                )
+                            else:
+                                control_request.future.set_result(
+                                    TurnControlResult(
+                                        success=True,
+                                        message=f"{control_request.kind} accepted",
+                                        turn_id=current_turn_id,
+                                    )
+                                )
+                    return False
+                response_cache[cache_key] = rpc
                 return False
 
             method = rpc.get("method")
@@ -550,7 +687,9 @@ class SubprocessExecutor:
             if resume_session_id:
                 thread_method = "thread/resume"
                 thread_params["threadId"] = resume_session_id
-                logger.info(f"{log_prefix}Resuming session via app-server: {resume_session_id}")
+                logger.info(
+                    f"{log_prefix}Resuming session via app-server: {resume_session_id}"
+                )
 
             thread_req_id = await send_request(thread_method, thread_params)
             thread_resp = await await_response(thread_req_id)
@@ -601,12 +740,40 @@ class SubprocessExecutor:
             if turn_resp.get("error"):
                 raise RuntimeError(f"turn/start failed: {turn_resp['error']}")
 
+            turn_obj = (turn_resp.get("result") or {}).get("turn", {})
+            current_turn_id = str(turn_obj.get("id") or "") or None
+            if not current_turn_id:
+                logger.warning(f"{log_prefix}turn/start did not return a turn id")
+
+            if current_turn_id:
+                active_turn_state = _ActiveTurnState(
+                    scope=session_scope,
+                    track_id=track_id,
+                    thread_id=result_session_id,
+                    turn_id=current_turn_id,
+                    control_queue=control_queue,
+                )
+                async with self._lock:
+                    self._active_turns_by_scope[session_scope] = active_turn_state
+                    self._active_turns_by_track[track_id] = active_turn_state
+
             is_final = False
             while not is_final:
-                rpc = await read_rpc_line()
-                if not rpc:
-                    continue
-                is_final = await process_rpc_message(rpc)
+                rpc_task = asyncio.create_task(read_rpc_line())
+                control_task = asyncio.create_task(control_queue.get())
+                done, pending = await asyncio.wait(
+                    {rpc_task, control_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for pending_task in pending:
+                    pending_task.cancel()
+                if rpc_task in done:
+                    rpc = rpc_task.result()
+                    if rpc:
+                        is_final = await process_rpc_message(rpc)
+                if control_task in done:
+                    control_request = control_task.result()
+                    await handle_control_request(control_request)
 
             await terminate_process_safely(process, timeout=2.0)
 
@@ -628,6 +795,15 @@ class SubprocessExecutor:
             )
 
         except asyncio.CancelledError:
+            for request in pending_control_responses.values():
+                if not request.future.done():
+                    request.future.set_result(
+                        TurnControlResult(
+                            success=False,
+                            error="Execution cancelled",
+                            turn_id=current_turn_id,
+                        )
+                    )
             await terminate_process_safely(process)
             return ExecutionResult(
                 success=False,
@@ -639,6 +815,15 @@ class SubprocessExecutor:
             )
         except Exception as e:
             logger.error(f"{log_prefix}Error during app-server execution: {e}")
+            for request in pending_control_responses.values():
+                if not request.future.done():
+                    request.future.set_result(
+                        TurnControlResult(
+                            success=False,
+                            error=f"Execution failed: {e}",
+                            turn_id=current_turn_id,
+                        )
+                    )
             await terminate_process_safely(process)
             return ExecutionResult(
                 success=False,
@@ -648,12 +833,31 @@ class SubprocessExecutor:
                 error=str(e),
             )
         finally:
+            for request in pending_control_responses.values():
+                if not request.future.done():
+                    request.future.set_result(
+                        TurnControlResult(
+                            success=False,
+                            error="Execution ended before control request completed",
+                            turn_id=current_turn_id,
+                        )
+                    )
             async with self._lock:
                 self._active_processes.pop(track_id, None)
                 self._process_channels.pop(track_id, None)
                 self._process_scopes.pop(track_id, None)
-                if execution_id and self._execution_track_ids.get(execution_id) == track_id:
+                if (
+                    execution_id
+                    and self._execution_track_ids.get(execution_id) == track_id
+                ):
                     self._execution_track_ids.pop(execution_id, None)
+                if self._active_turns_by_track.get(track_id):
+                    self._active_turns_by_track.pop(track_id, None)
+                scope_state = self._active_turns_by_scope.get(session_scope)
+                if scope_state and scope_state.track_id == track_id:
+                    self._active_turns_by_scope.pop(session_scope, None)
+            if active_turn_state:
+                active_turn_state.done_event.set()
 
     @staticmethod
     def _resolve_sandbox_mode(mode: Optional[str], log_prefix: str) -> str:
@@ -742,7 +946,9 @@ class SubprocessExecutor:
         try:
             preamble = preamble_path.read_text(encoding="utf-8").strip()
         except FileNotFoundError:
-            logger.debug(f"{log_prefix}No default Codex instructions file at {preamble_path}")
+            logger.debug(
+                f"{log_prefix}No default Codex instructions file at {preamble_path}"
+            )
             return prompt
         except Exception as e:
             logger.warning(
@@ -756,23 +962,347 @@ class SubprocessExecutor:
             return f"{preamble}\n\n{prompt}"
         return preamble
 
+    async def has_active_turn(self, session_scope: str) -> bool:
+        """Return True when a turn is currently active for the session scope."""
+        async with self._lock:
+            active = self._active_turns_by_scope.get(session_scope)
+            return bool(active and not active.done_event.is_set())
+
+    async def get_active_turn(self, session_scope: str) -> Optional[dict]:
+        """Return metadata for the active turn in the scope, if any."""
+        async with self._lock:
+            active = self._active_turns_by_scope.get(session_scope)
+            if not active or active.done_event.is_set():
+                return None
+            return {
+                "scope": active.scope,
+                "track_id": active.track_id,
+                "thread_id": active.thread_id,
+                "turn_id": active.turn_id,
+                "started_at": active.started_at,
+            }
+
+    async def _enqueue_control(
+        self,
+        session_scope: str,
+        kind: str,
+        text: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> TurnControlResult:
+        """Send a steer/interrupt request to the active turn loop."""
+        async with self._lock:
+            active = self._active_turns_by_scope.get(session_scope)
+            if not active or active.done_event.is_set():
+                return TurnControlResult(
+                    success=False, error="No active turn", turn_id=None
+                )
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[TurnControlResult] = loop.create_future()
+            request = _ControlRequest(kind=kind, text=text, future=future)
+            await active.control_queue.put(request)
+
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return TurnControlResult(
+                success=False,
+                error=f"{kind} request timed out",
+                turn_id=active.turn_id,
+            )
+
+    async def _wait_for_turn_settle(self, session_scope: str, timeout: float) -> bool:
+        """Wait for an active turn in scope to finish after an interrupt request."""
+        async with self._lock:
+            active = self._active_turns_by_scope.get(session_scope)
+            if not active or active.done_event.is_set():
+                return True
+            done_event = active.done_event
+        try:
+            await asyncio.wait_for(done_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def steer_active_turn(
+        self,
+        session_scope: str,
+        text: str,
+        timeout: float = 5.0,
+    ) -> TurnControlResult:
+        """Send `turn/steer` for the currently active turn in the scope."""
+        return await self._enqueue_control(
+            session_scope, kind="steer", text=text, timeout=timeout
+        )
+
+    async def interrupt_active_turn(
+        self,
+        session_scope: str,
+        timeout: float = 5.0,
+    ) -> TurnControlResult:
+        """Send `turn/interrupt` for the currently active turn in the scope."""
+        return await self._enqueue_control(
+            session_scope, kind="interrupt", timeout=timeout
+        )
+
+    async def _rpc_call(
+        self,
+        method: str,
+        params: dict,
+        working_directory: str = "~",
+    ) -> dict:
+        """Execute a single app-server RPC method call and return its result payload."""
+        cmd = ["codex", "app-server", "--listen", "stdio://"]
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=working_directory,
+            limit=50 * 1024 * 1024,
+        )
+        next_request_id = 1
+        response_cache: dict[str, dict] = {}
+
+        async def send_rpc(payload: dict) -> None:
+            if process.stdin is None:
+                raise RuntimeError("app-server stdin is unavailable")
+            process.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
+            await process.stdin.drain()
+
+        async def send_request(request_method: str, request_params: dict) -> int:
+            nonlocal next_request_id
+            request_id = next_request_id
+            next_request_id += 1
+            await send_rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": request_method,
+                    "params": request_params,
+                }
+            )
+            return request_id
+
+        async def read_rpc_line() -> dict:
+            if process.stdout is None:
+                raise RuntimeError("app-server stdout is unavailable")
+            line = await process.stdout.readline()
+            if not line:
+                raise RuntimeError("codex app-server closed the stream unexpectedly")
+            line_str = line.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                return {}
+            try:
+                return json.loads(line_str)
+            except json.JSONDecodeError:
+                return {}
+
+        async def process_rpc_message(rpc: dict) -> None:
+            response_id = rpc.get("id")
+            if response_id is not None and ("result" in rpc or "error" in rpc):
+                response_cache[str(response_id)] = rpc
+                return
+            method_name = rpc.get("method")
+            if not method_name:
+                return
+            if response_id is not None and "params" in rpc:
+                # This executor path is metadata/introspection only; reject server requests.
+                await send_rpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": response_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Unsupported app-server request method: {method_name}",
+                        },
+                    }
+                )
+
+        async def await_response(request_id: int) -> dict:
+            cache_key = str(request_id)
+            while True:
+                if cache_key in response_cache:
+                    return response_cache.pop(cache_key)
+                rpc = await read_rpc_line()
+                if not rpc:
+                    continue
+                await process_rpc_message(rpc)
+
+        try:
+            init_id = await send_request(
+                "initialize",
+                {
+                    "clientInfo": {"name": "slack-claude-code", "version": "1.0"},
+                    "capabilities": {"experimentalApi": True},
+                },
+            )
+            init_response = await await_response(init_id)
+            if init_response.get("error"):
+                raise RuntimeError(f"initialize failed: {init_response['error']}")
+
+            request_id = await send_request(method, params)
+            response = await await_response(request_id)
+            if response.get("error"):
+                raise RuntimeError(str(response["error"]))
+            return response.get("result", {})
+        finally:
+            await terminate_process_safely(process, timeout=2.0)
+
+    async def thread_list(
+        self,
+        working_directory: str,
+        limit: int = 20,
+        archived: Optional[bool] = False,
+    ) -> dict:
+        """List persisted Codex threads."""
+        return await self._rpc_call(
+            "thread/list",
+            {"limit": limit, "archived": archived},
+            working_directory=working_directory,
+        )
+
+    async def thread_read(
+        self,
+        thread_id: str,
+        working_directory: str,
+        include_turns: bool = True,
+    ) -> dict:
+        """Read a specific thread."""
+        return await self._rpc_call(
+            "thread/read",
+            {"threadId": thread_id, "includeTurns": include_turns},
+            working_directory=working_directory,
+        )
+
+    async def thread_archive(self, thread_id: str, working_directory: str) -> dict:
+        """Archive a thread."""
+        return await self._rpc_call(
+            "thread/archive",
+            {"threadId": thread_id},
+            working_directory=working_directory,
+        )
+
+    async def thread_unarchive(self, thread_id: str, working_directory: str) -> dict:
+        """Unarchive a thread."""
+        return await self._rpc_call(
+            "thread/unarchive",
+            {"threadId": thread_id},
+            working_directory=working_directory,
+        )
+
+    async def thread_fork(self, thread_id: str, working_directory: str) -> dict:
+        """Fork a thread."""
+        return await self._rpc_call(
+            "thread/fork",
+            {"threadId": thread_id},
+            working_directory=working_directory,
+        )
+
+    async def thread_rollback(
+        self, thread_id: str, num_turns: int, working_directory: str
+    ) -> dict:
+        """Rollback a thread by dropping the most recent turns."""
+        return await self._rpc_call(
+            "thread/rollback",
+            {"threadId": thread_id, "numTurns": max(1, num_turns)},
+            working_directory=working_directory,
+        )
+
+    async def thread_compact_start(
+        self, thread_id: str, working_directory: str
+    ) -> dict:
+        """Start context compaction for a thread."""
+        return await self._rpc_call(
+            "thread/compact/start",
+            {"threadId": thread_id},
+            working_directory=working_directory,
+        )
+
+    async def review_start(
+        self, thread_id: str, target: dict, working_directory: str
+    ) -> dict:
+        """Start a Codex review for the current session thread."""
+        return await self._rpc_call(
+            "review/start",
+            {"threadId": thread_id, "target": target},
+            working_directory=working_directory,
+        )
+
+    async def model_list(self, working_directory: str) -> dict:
+        """Return available models from app-server."""
+        return await self._rpc_call(
+            "model/list", {}, working_directory=working_directory
+        )
+
+    async def account_read(self, working_directory: str) -> dict:
+        """Return account metadata."""
+        return await self._rpc_call(
+            "account/read", {}, working_directory=working_directory
+        )
+
+    async def config_read(self, working_directory: str) -> dict:
+        """Return resolved config from app-server."""
+        return await self._rpc_call(
+            "config/read", {}, working_directory=working_directory
+        )
+
+    async def config_requirements_read(self, working_directory: str) -> dict:
+        """Return runtime config requirements from app-server."""
+        return await self._rpc_call(
+            "configRequirements/read", {}, working_directory=working_directory
+        )
+
+    async def experimental_feature_list(self, working_directory: str) -> dict:
+        """Return server experimental feature list."""
+        return await self._rpc_call(
+            "experimentalFeature/list", {}, working_directory=working_directory
+        )
+
+    async def mcp_server_status_list(self, working_directory: str) -> dict:
+        """Return MCP server status from app-server."""
+        return await self._rpc_call(
+            "mcpServerStatus/list", {}, working_directory=working_directory
+        )
+
     async def cancel(self, execution_id: str) -> bool:
         """Cancel an active execution."""
+        scope = None
         async with self._lock:
             process_key = None
             if execution_id in self._active_processes:
                 process_key = execution_id
             else:
-                track_id = self._execution_track_ids.get(execution_id)
-                if track_id and track_id in self._active_processes:
-                    process_key = track_id
+                mapped_track = self._execution_track_ids.get(execution_id)
+                if mapped_track and mapped_track in self._active_processes:
+                    process_key = mapped_track
 
             if process_key is None:
                 return False
+            scope = self._process_scopes.get(process_key)
 
+        if scope:
+            await self.interrupt_active_turn(scope, timeout=1.0)
+            await self._wait_for_turn_settle(scope, timeout=1.5)
+
+        async with self._lock:
+            process_key = None
+            if execution_id in self._active_processes:
+                process_key = execution_id
+            else:
+                mapped_track = self._execution_track_ids.get(execution_id)
+                if mapped_track and mapped_track in self._active_processes:
+                    process_key = mapped_track
+            if process_key is None:
+                return True
             process = self._active_processes.pop(process_key)
             self._process_channels.pop(process_key, None)
             self._process_scopes.pop(process_key, None)
+            active_turn = self._active_turns_by_track.pop(process_key, None)
+            if active_turn:
+                scope_state = self._active_turns_by_scope.get(active_turn.scope)
+                if scope_state and scope_state.track_id == process_key:
+                    self._active_turns_by_scope.pop(active_turn.scope, None)
+                active_turn.done_event.set()
 
             mapped_track_id = self._execution_track_ids.get(execution_id)
             if mapped_track_id == process_key:
@@ -783,6 +1313,13 @@ class SubprocessExecutor:
 
     async def cancel_by_scope(self, session_scope: str) -> int:
         """Cancel active executions for a channel/thread session scope."""
+        async with self._lock:
+            initial_count = sum(
+                1 for scope in self._process_scopes.values() if scope == session_scope
+            )
+        await self.interrupt_active_turn(session_scope, timeout=1.0)
+        await self._wait_for_turn_settle(session_scope, timeout=1.5)
+
         async with self._lock:
             track_ids_to_cancel = [
                 track_id
@@ -796,6 +1333,12 @@ class SubprocessExecutor:
                     processes.append(process)
                 self._process_channels.pop(track_id, None)
                 self._process_scopes.pop(track_id, None)
+                active_turn = self._active_turns_by_track.pop(track_id, None)
+                if active_turn:
+                    active_turn.done_event.set()
+                    scope_state = self._active_turns_by_scope.get(active_turn.scope)
+                    if scope_state and scope_state.track_id == track_id:
+                        self._active_turns_by_scope.pop(active_turn.scope, None)
             for execution_id, track_id in list(self._execution_track_ids.items()):
                 if track_id in track_ids_to_cancel:
                     self._execution_track_ids.pop(execution_id, None)
@@ -805,7 +1348,7 @@ class SubprocessExecutor:
                 *(terminate_process_safely(process) for process in processes),
                 return_exceptions=True,
             )
-        return len(processes)
+        return max(len(processes), initial_count)
 
     async def cancel_by_channel(self, channel_id: str) -> int:
         """Cancel all active executions for a specific channel.
@@ -816,6 +1359,20 @@ class SubprocessExecutor:
         Returns:
             Number of processes cancelled.
         """
+        async with self._lock:
+            initial_count = sum(
+                1 for ch_id in self._process_channels.values() if ch_id == channel_id
+            )
+        async with self._lock:
+            channel_scopes = {
+                scope
+                for track_id, scope in self._process_scopes.items()
+                if self._process_channels.get(track_id) == channel_id
+            }
+        for scope in channel_scopes:
+            await self.interrupt_active_turn(scope, timeout=1.0)
+            await self._wait_for_turn_settle(scope, timeout=1.5)
+
         async with self._lock:
             track_ids_to_cancel = [
                 track_id
@@ -828,6 +1385,12 @@ class SubprocessExecutor:
                     processes.append(self._active_processes.pop(track_id))
                     self._process_channels.pop(track_id, None)
                     self._process_scopes.pop(track_id, None)
+                    active_turn = self._active_turns_by_track.pop(track_id, None)
+                    if active_turn:
+                        active_turn.done_event.set()
+                        scope_state = self._active_turns_by_scope.get(active_turn.scope)
+                        if scope_state and scope_state.track_id == track_id:
+                            self._active_turns_by_scope.pop(active_turn.scope, None)
             for execution_id, track_id in list(self._execution_track_ids.items()):
                 if track_id in track_ids_to_cancel:
                     self._execution_track_ids.pop(execution_id, None)
@@ -837,22 +1400,34 @@ class SubprocessExecutor:
                 *(terminate_process_safely(process) for process in processes),
                 return_exceptions=True,
             )
-        return len(processes)
+        return max(len(processes), initial_count)
 
     async def cancel_all(self) -> int:
         """Cancel all active executions."""
+        async with self._lock:
+            initial_count = len(self._active_processes)
+        async with self._lock:
+            active_scopes = list(self._active_turns_by_scope.keys())
+        for scope in active_scopes:
+            await self.interrupt_active_turn(scope, timeout=1.0)
+            await self._wait_for_turn_settle(scope, timeout=1.5)
+
         async with self._lock:
             processes = list(self._active_processes.values())
             self._active_processes.clear()
             self._process_channels.clear()
             self._process_scopes.clear()
             self._execution_track_ids.clear()
+            for active_turn in self._active_turns_by_track.values():
+                active_turn.done_event.set()
+            self._active_turns_by_scope.clear()
+            self._active_turns_by_track.clear()
         if processes:
             await asyncio.gather(
                 *(terminate_process_safely(process) for process in processes),
                 return_exceptions=True,
             )
-        return len(processes)
+        return max(len(processes), initial_count)
 
     async def shutdown(self) -> None:
         """Shutdown and cancel all active executions."""
