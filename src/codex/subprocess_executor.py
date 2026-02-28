@@ -15,7 +15,6 @@ from src.codex.capabilities import normalize_codex_approval_mode
 from src.config import config, parse_model_effort
 from src.utils.execution_scope import build_session_scope
 from src.utils.process_utils import terminate_process_safely
-from src.utils.stream_models import concat_with_spacing
 
 from .streaming import StreamMessage, StreamParser
 
@@ -302,6 +301,7 @@ class SubprocessExecutor:
         control_queue: asyncio.Queue[_ControlRequest] = asyncio.Queue()
         active_turn_state: Optional[_ActiveTurnState] = None
         current_turn_id: Optional[str] = None
+        assistant_delta_item_ids: set[str] = set()
 
         if model:
             base_model, effort = parse_model_effort(model)
@@ -362,13 +362,14 @@ class SubprocessExecutor:
                 result_session_id = msg.session_id
 
             if msg.type == "assistant" and msg.content:
-                accumulated_output = concat_with_spacing(
-                    accumulated_output, msg.content
-                )
+                # App-server emits tiny deltas; preserve raw chunk boundaries.
+                accumulated_output += msg.content
 
             if msg.type == "result":
                 cost_usd = msg.cost_usd
                 duration_ms = msg.duration_ms
+                if msg.content and not accumulated_output:
+                    accumulated_output = msg.content
                 if msg.detailed_content:
                     accumulated_detailed = msg.detailed_content
                 if msg.raw and msg.raw.get("is_error"):
@@ -398,6 +399,20 @@ class SubprocessExecutor:
             if msg:
                 return await handle_stream_message(msg)
             return False
+
+        def _extract_item_id(params: dict) -> Optional[str]:
+            """Extract item identifier from app-server delta params when available."""
+            for key in ("itemId", "item_id", "id"):
+                value = params.get(key)
+                if value is not None and str(value).strip():
+                    return str(value)
+            item = params.get("item")
+            if isinstance(item, dict):
+                for key in ("itemId", "item_id", "id"):
+                    value = item.get(key)
+                    if value is not None and str(value).strip():
+                        return str(value)
+            return None
 
         async def handle_notification(method: str, params: dict) -> bool:
             nonlocal result_session_id, current_turn_id
@@ -429,6 +444,9 @@ class SubprocessExecutor:
                 return False
 
             if method in {"item/agentMessage/delta", "item/plan/delta"}:
+                item_id = _extract_item_id(params)
+                if item_id:
+                    assistant_delta_item_ids.add(item_id)
                 return await emit_assistant_delta(str(params.get("delta", "")))
 
             if method in {
@@ -449,6 +467,26 @@ class SubprocessExecutor:
 
             if method == "item/completed":
                 item = params.get("item", {})
+                item_type = str(item.get("type", ""))
+                item_identifier = item.get("id")
+                item_id = str(item_identifier) if item_identifier is not None else ""
+                if item_id:
+                    delta_seen_for_item = item_id in assistant_delta_item_ids
+                    assistant_delta_item_ids.discard(item_id)
+                else:
+                    delta_seen_for_item = False
+                if item_type in {"agent_message", "agentMessage"}:
+                    item_text_raw = item.get("text")
+                    item_text = str(item_text_raw) if item_text_raw is not None else ""
+                    # item/completed includes full text already streamed as deltas.
+                    if delta_seen_for_item or (
+                        item_text and accumulated_output.endswith(item_text)
+                    ):
+                        logger.debug(
+                            f"{log_prefix}Skipping duplicate completed assistant item "
+                            f"{item_id or '<unknown>'}"
+                        )
+                        return False
                 synthetic = {"type": "item.completed", "item": item}
                 msg = parser.parse_line(json.dumps(synthetic))
                 if msg:
@@ -465,6 +503,7 @@ class SubprocessExecutor:
                 turn = params.get("turn", {})
                 status = str(turn.get("status", "")).lower()
                 current_turn_id = None
+                assistant_delta_item_ids.clear()
                 if status in {"failed", "interrupted"}:
                     turn_error = turn.get("error", {})
                     error_text = (

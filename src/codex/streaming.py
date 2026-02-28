@@ -9,11 +9,7 @@ from src.backends.stream_parsing_common import (
     create_tool_result,
     parse_json_line_with_buffer,
 )
-from src.utils.stream_models import (
-    BaseToolActivity,
-    StreamMessage,
-    concat_with_spacing,
-)
+from src.utils.stream_models import BaseToolActivity, StreamMessage
 
 # Maximum size for buffered incomplete JSON to prevent memory exhaustion
 MAX_BUFFER_SIZE = 1024 * 1024  # 1MB
@@ -64,12 +60,8 @@ class StreamParser:
         """Append assistant text to accumulated output buffers."""
         if not content:
             return
-        self.accumulated_content = concat_with_spacing(
-            self.accumulated_content, content
-        )
-        self.accumulated_detailed = concat_with_spacing(
-            self.accumulated_detailed, content
-        )
+        self.accumulated_content += content
+        self.accumulated_detailed += content
 
     def _create_tool_call(
         self,

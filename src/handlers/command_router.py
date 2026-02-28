@@ -14,7 +14,6 @@ from src.config import config
 from src.database.models import Session
 from src.question.manager import QuestionManager
 from src.utils.execution_scope import build_session_scope
-from src.utils.stream_models import concat_with_spacing
 
 
 @dataclass
@@ -95,7 +94,7 @@ async def execute_for_session(
                 await on_chunk(msg)
 
             if msg.type == "assistant" and msg.content:
-                accumulated_context = concat_with_spacing(accumulated_context, msg.content)
+                accumulated_context += msg.content
 
         async def on_user_input_request(tool_use_id: str, tool_input: dict) -> dict | None:
             nonlocal pending_question, question_count

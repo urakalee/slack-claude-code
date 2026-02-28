@@ -177,6 +177,127 @@ class TestCodexSubprocessExecutor:
         assert turn_start["params"]["input"][0]["text"] == "build feature"
 
     @pytest.mark.asyncio
+    async def test_assistant_deltas_preserve_text_and_skip_completed_duplicate(
+        self, monkeypatch
+    ):
+        """Delta chunks should be concatenated verbatim and not replayed by item/completed."""
+        monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
+
+        process = _DummyProcess(
+            [
+                _json_line({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-1"}},
+                    }
+                ),
+                _json_line({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "item_1", "delta": "I"},
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "item_1", "delta": "'m testing formatting."},
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "id": "item_1",
+                                "type": "agentMessage",
+                                "text": "I'm testing formatting.",
+                            }
+                        },
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {"turn": {"status": "completed"}},
+                    }
+                ),
+            ]
+        )
+
+        executor = SubprocessExecutor()
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            result = await executor.execute(
+                prompt="format",
+                working_directory="/tmp/workspace",
+            )
+
+        assert result.success is True
+        assert result.output == "I'm testing formatting."
+        assert "\n\n" not in result.output
+
+    @pytest.mark.asyncio
+    async def test_agent_message_completed_without_deltas_is_retained(self, monkeypatch):
+        """item/completed assistant text should still be captured when no deltas were emitted."""
+        monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
+
+        process = _DummyProcess(
+            [
+                _json_line({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-1"}},
+                    }
+                ),
+                _json_line({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "id": "item_2",
+                                "type": "agent_message",
+                                "text": "Final assistant message",
+                            }
+                        },
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {"turn": {"status": "completed"}},
+                    }
+                ),
+            ]
+        )
+
+        executor = SubprocessExecutor()
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            result = await executor.execute(
+                prompt="format",
+                working_directory="/tmp/workspace",
+            )
+
+        assert result.success is True
+        assert result.output == "Final assistant message"
+
+    @pytest.mark.asyncio
     async def test_user_input_request_uses_callback_response(self, monkeypatch):
         """request_user_input server requests should be answered by callback payload."""
         monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
