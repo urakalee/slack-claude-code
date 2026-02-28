@@ -15,6 +15,7 @@ import sys
 import time
 import traceback
 import uuid
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -45,6 +46,26 @@ from src.utils.formatters.command import (
 from src.utils.formatters.streaming import processing_message, streaming_update
 from src.utils.execution_scope import build_session_scope
 from src.utils.streaming import StreamingMessageState, create_streaming_callback
+
+
+def configure_logging() -> None:
+    """Configure log sinks for stderr and data-directory log file."""
+    data_dir = Path(config.DATABASE_PATH).expanduser().resolve().parent
+    data_dir.mkdir(parents=True, exist_ok=True)
+    log_path = data_dir / "slack_claude.log"
+
+    logger.remove()
+    logger.add(sys.stderr, level="INFO", backtrace=False, diagnose=False)
+    logger.add(
+        log_path,
+        level="DEBUG",
+        rotation="00:00",
+        retention="3 days",
+        encoding="utf-8",
+        enqueue=True,
+        backtrace=False,
+        diagnose=False,
+    )
 
 
 async def slack_api_with_retry(
@@ -451,6 +472,8 @@ async def _execute_codex_message(
 
 async def main():
     """Main application entry point."""
+    configure_logging()
+
     # Validate configuration
     errors = config.validate_required()
     if errors:

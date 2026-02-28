@@ -1,12 +1,17 @@
 """Unit tests for app-level helpers."""
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.app import _route_codex_message_to_active_turn_or_queue, slack_api_with_retry
+from src.app import (
+    _route_codex_message_to_active_turn_or_queue,
+    configure_logging,
+    slack_api_with_retry,
+)
 
 
 class TestSlackApiRetry:
@@ -26,6 +31,31 @@ class TestSlackApiRetry:
             await slack_api_with_retry(failing_call, max_retries=3, base_delay=0)
 
         assert call_count == 1
+
+
+class TestConfigureLogging:
+    """Tests for logger sink configuration."""
+
+    def test_configure_logging_writes_log_file_to_database_directory(self, tmp_path):
+        """Log file should live next to the configured database with 3-day retention."""
+        db_path = tmp_path / "data" / "slack_claude.db"
+        expected_log_path = db_path.parent / "slack_claude.log"
+
+        with patch("src.app.config.DATABASE_PATH", str(db_path)):
+            with patch("src.app.logger.remove") as mock_remove:
+                with patch("src.app.logger.add") as mock_add:
+                    configure_logging()
+
+        mock_remove.assert_called_once_with()
+        assert mock_add.call_count == 2
+        assert mock_add.call_args_list[0].args[0] is sys.stderr
+
+        file_sink_call = mock_add.call_args_list[1]
+        assert file_sink_call.args[0] == expected_log_path
+        assert file_sink_call.kwargs["retention"] == "3 days"
+        assert file_sink_call.kwargs["rotation"] == "00:00"
+
+        assert expected_log_path.parent.exists()
 
 
 class TestCodexActiveTurnRouting:
