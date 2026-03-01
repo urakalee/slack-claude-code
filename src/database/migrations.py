@@ -155,9 +155,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
     # Add Codex-specific columns if they don't exist
     if "codex_session_id" not in column_names:
-        await db.execute(
-            "ALTER TABLE sessions ADD COLUMN codex_session_id TEXT DEFAULT NULL"
-        )
+        await db.execute("ALTER TABLE sessions ADD COLUMN codex_session_id TEXT DEFAULT NULL")
         await db.commit()
 
     if "sandbox_mode" not in column_names:
@@ -167,9 +165,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         await db.commit()
 
     if "approval_mode" not in column_names:
-        await db.execute(
-            "ALTER TABLE sessions ADD COLUMN approval_mode TEXT DEFAULT 'on-request'"
-        )
+        await db.execute("ALTER TABLE sessions ADD COLUMN approval_mode TEXT DEFAULT 'on-request'")
         await db.commit()
 
     # Add queue_items.thread_ts for thread-scoped queueing
@@ -177,9 +173,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
     queue_columns = await queue_cursor.fetchall()
     queue_column_names = [col[1] for col in queue_columns]
     if "thread_ts" not in queue_column_names:
-        await db.execute(
-            "ALTER TABLE queue_items ADD COLUMN thread_ts TEXT DEFAULT NULL"
-        )
+        await db.execute("ALTER TABLE queue_items ADD COLUMN thread_ts TEXT DEFAULT NULL")
         await db.commit()
 
     # Ensure queue scope indexes exist for channel+thread isolation
@@ -188,6 +182,14 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
     )
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_queue_items_scope_position ON queue_items(channel_id, thread_ts, position)"
+    )
+
+    # Normalize historical blank thread scopes to NULL so scope matching is stable.
+    await db.execute(
+        "UPDATE sessions SET thread_ts = NULL WHERE TRIM(COALESCE(thread_ts, '')) = ''"
+    )
+    await db.execute(
+        "UPDATE queue_items SET thread_ts = NULL WHERE TRIM(COALESCE(thread_ts, '')) = ''"
     )
     await db.commit()
 

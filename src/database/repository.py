@@ -126,6 +126,7 @@ class DatabaseRepository:
                    FROM sessions
                    WHERE {self._SESSION_SCOPE_WHERE}
                    ORDER BY
+                       (CASE WHEN model IS NOT NULL THEN 1 ELSE 0 END) DESC,
                        ((CASE WHEN model IS NOT NULL THEN 1 ELSE 0 END) +
                         (CASE WHEN codex_session_id IS NOT NULL THEN 1 ELSE 0 END) +
                         (CASE WHEN claude_session_id IS NOT NULL THEN 1 ELSE 0 END) +

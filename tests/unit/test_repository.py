@@ -88,6 +88,42 @@ class TestSessionOperations:
         assert session.codex_session_id == "codex-session-123"
 
     @pytest.mark.asyncio
+    async def test_get_or_create_session_prefers_model_row_on_population_tie(self, db_repo):
+        """Model-bearing rows should win when duplicate rows are otherwise equally populated."""
+        async with aiosqlite.connect(db_repo.db_path) as db:
+            await db.execute(
+                """INSERT INTO sessions (
+                       channel_id, thread_ts, working_directory, model, permission_mode,
+                       codex_session_id, last_active
+                   ) VALUES (?, NULL, ?, ?, ?, NULL, ?)""",
+                (
+                    "C123ABC",
+                    "/tmp/model",
+                    "gpt-5.3-codex",
+                    "default",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            await db.execute(
+                """INSERT INTO sessions (
+                       channel_id, thread_ts, working_directory, model, permission_mode,
+                       codex_session_id, last_active
+                   ) VALUES (?, NULL, ?, NULL, ?, ?, ?)""",
+                (
+                    "C123ABC",
+                    "/tmp/no-model",
+                    "default",
+                    "codex-session-999",
+                    "2026-01-02T00:00:00+00:00",
+                ),
+            )
+            await db.commit()
+
+        session = await db_repo.get_or_create_session("C123ABC", None)
+        assert session.working_directory == "/tmp/model"
+        assert session.model == "gpt-5.3-codex"
+
+    @pytest.mark.asyncio
     async def test_get_or_create_session_thread_isolation(self, db_repo):
         """Different threads get different sessions."""
         channel_session = await db_repo.get_or_create_session("C123ABC", None)
