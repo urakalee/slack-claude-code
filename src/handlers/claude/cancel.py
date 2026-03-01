@@ -2,7 +2,7 @@
 
 from slack_bolt.async_app import AsyncApp
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_cancel_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
@@ -31,13 +31,13 @@ def register_cancel_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
                 text=":information_source: No active executions to cancel in this channel.",
             )
 
-    @app.command("/cancel")
+    @app.command(get_command_name("/cancel"))
     @slack_command()
     async def handle_cancel(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /cancel command - cancel active executions in channel."""
         await _handle_cancel(ctx, deps)
 
-    @app.command("/c")
+    @app.command(get_command_name("/c"))
     @slack_command()
     async def handle_c(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /c command - alias for /cancel."""

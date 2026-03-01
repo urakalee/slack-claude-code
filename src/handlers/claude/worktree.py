@@ -9,7 +9,7 @@ from src.database.models import Session
 from src.git.service import GitError, GitService
 from src.utils.formatting import SlackFormatter
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, slack_command, get_command_name
 
 
 def register_worktree_commands(app: AsyncApp, deps: HandlerDependencies) -> None:

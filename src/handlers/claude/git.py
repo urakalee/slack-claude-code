@@ -6,7 +6,7 @@ from src.config import config
 from src.git.service import GitError, GitService
 from src.utils.formatting import SlackFormatter
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_git_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
@@ -21,7 +21,7 @@ def register_git_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
     """
     git_service = GitService()
 
-    @app.command("/diff")
+    @app.command(get_command_name("/diff"))
     @slack_command()
     async def handle_diff(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /diff [--staged] command - show git diff of uncommitted changes."""
@@ -97,7 +97,7 @@ def register_git_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
                 blocks=SlackFormatter.error_message(f"Git error: {e}"),
             )
 
-    @app.command("/status")
+    @app.command(get_command_name("/status"))
     @slack_command()
     async def handle_status(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /status command - show git status."""
@@ -176,7 +176,7 @@ def register_git_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
                 blocks=SlackFormatter.error_message(f"Git error: {e}"),
             )
 
-    @app.command("/commit")
+    @app.command(get_command_name("/commit"))
     @slack_command(require_text=True, usage_hint="Usage: /commit <message>")
     async def handle_commit(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /commit <message> command - commit staged changes."""
@@ -220,7 +220,7 @@ def register_git_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
                 blocks=SlackFormatter.error_message(f"Git error: {e}"),
             )
 
-    @app.command("/branch")
+    @app.command(get_command_name("/branch"))
     @slack_command()
     async def handle_branch(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /branch [create <name> | switch <name>] command."""

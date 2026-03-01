@@ -1,5 +1,6 @@
 """Base infrastructure for Slack command handlers."""
 
+import re
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -9,6 +10,73 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from src.config import config
 from src.utils.formatting import SlackFormatter
+
+
+def get_command_name(base_command: str) -> str:
+    """
+    Apply configured command suffix to a base command name.
+
+    Generates the final Slack command name by appending the configured
+    COMMAND_SUFFIX from settings. If no suffix is configured, returns
+    the original command unchanged.
+
+    Parameters
+    ----------
+    base_command : str
+        The base command name (e.g., "/ls", "/cd", "/model").
+        Must start with "/" and follow Slack command naming rules.
+
+    Returns
+    -------
+    str
+        The final command name with suffix applied (e.g., "/ls-cc").
+        Returns the original command if COMMAND_SUFFIX is empty.
+
+    Raises
+    ------
+    ValueError
+        If the resulting command name violates Slack's command format rules:
+        - Must match pattern: /[a-z0-9_-]{1,32}
+        - Total length must not exceed 32 characters (including "/")
+        - Only lowercase letters, numbers, underscore, and hyphen allowed
+
+    Examples
+    --------
+    >>> # With COMMAND_SUFFIX = "cc"
+    >>> get_command_name("/ls")
+    '/ls-cc'
+    >>> get_command_name("/model")
+    '/model-cc'
+
+    >>> # With COMMAND_SUFFIX = ""
+    >>> get_command_name("/ls")
+    '/ls'
+
+    Notes
+    -----
+    Slack command format specification:
+    https://api.slack.com/interactivity/slash-commands#creating_commands
+    """
+    suffix = config.COMMAND_SUFFIX.strip()
+
+    # No suffix configured - return original command
+    if not suffix:
+        return base_command
+
+    # Construct new command with suffix
+    new_command = f"{base_command}-{suffix}"
+
+    # Validate against Slack command format: /[a-z0-9_-]{1,32}
+    if not re.match(r"^/[a-z0-9_-]{1,32}$", new_command):
+        error_msg = (
+            f"Invalid Slack command format: '{new_command}'. "
+            f"Commands must match pattern /[a-z0-9_-]{{1,32}} "
+            f"(lowercase letters, numbers, underscore, hyphen only; max 32 chars total)."
+        )
+        LoguruLogger.error(error_msg)
+        raise ValueError(error_msg)
+
+    return new_command
 
 
 @dataclass

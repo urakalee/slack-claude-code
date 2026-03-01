@@ -266,6 +266,12 @@ class Config(BaseSettings):
     # GitHub repository for web viewer links
     GITHUB_REPO: str = ""
 
+    # Command suffix configuration
+    COMMAND_SUFFIX: str = Field(
+        default="",
+        description="Global suffix for all Slack commands (e.g., 'cc' -> /ls-cc, /cd-cc)",
+    )
+
     # Codex configuration
     CODEX_SANDBOX_MODE: str = "workspace-write"
     CODEX_APPROVAL_MODE: str = "on-request"

@@ -3,7 +3,7 @@
 from slack_bolt.async_app import AsyncApp
 
 from ..utils.formatting import SlackFormatter
-from .base import CommandContext, HandlerDependencies, slack_command
+from .base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_notifications_command(app: AsyncApp, deps: HandlerDependencies) -> None:
@@ -17,7 +17,7 @@ def register_notifications_command(app: AsyncApp, deps: HandlerDependencies) -> 
         Shared handler dependencies.
     """
 
-    @app.command("/notifications")
+    @app.command(get_command_name("/notifications"))
     @slack_command(
         require_text=False,
         usage_hint="Usage: /notifications [on|off|completion on|off|permission on|off]",

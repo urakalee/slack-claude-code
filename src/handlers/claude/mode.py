@@ -5,7 +5,7 @@ from slack_bolt.async_app import AsyncApp
 from src.config import config
 from src.utils.formatting import SlackFormatter
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 # Mode aliases: short name -> CLI mode value
 MODE_ALIASES = {
@@ -32,7 +32,7 @@ def register_mode_command(app: AsyncApp, deps: HandlerDependencies) -> None:
         Shared handler dependencies.
     """
 
-    @app.command("/mode")
+    @app.command(get_command_name("/mode"))
     @slack_command(
         require_text=False, usage_hint="Usage: /mode [bypass|accept|plan|ask|default|delegate]"
     )

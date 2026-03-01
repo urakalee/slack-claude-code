@@ -7,7 +7,7 @@ from slack_bolt.async_app import AsyncApp
 from src.config import config
 from src.utils.formatting import SlackFormatter
 
-from .base import CommandContext, HandlerDependencies, slack_command
+from .base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_basic_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
@@ -21,7 +21,7 @@ def register_basic_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
         Shared handler dependencies.
     """
 
-    @app.command("/ls")
+    @app.command(get_command_name("/ls"))
     @slack_command()
     async def handle_ls(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /ls [path] command - list directory contents and show cwd."""
@@ -80,7 +80,7 @@ def register_basic_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
                 blocks=SlackFormatter.error_message(f"Cannot access directory: {e}"),
             )
 
-    @app.command("/cd")
+    @app.command(get_command_name("/cd"))
     @slack_command()
     async def handle_cd(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /cd [path] command - change working directory with relative path support."""
@@ -125,7 +125,7 @@ def register_basic_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
             blocks=SlackFormatter.cwd_updated(str(target_path)),
         )
 
-    @app.command("/pwd")
+    @app.command(get_command_name("/pwd"))
     @slack_command()
     async def handle_pwd(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /pwd command - print current working directory."""

@@ -15,7 +15,7 @@ from src.utils.formatters.base import markdown_to_mrkdwn
 from src.utils.formatting import SlackFormatter
 from src.utils.streaming import StreamingMessageState, create_streaming_callback
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_agents_command(app: AsyncApp, deps: HandlerDependencies) -> None:
@@ -35,7 +35,7 @@ def register_agents_command(app: AsyncApp, deps: HandlerDependencies) -> None:
         Shared handler dependencies.
     """
 
-    @app.command("/agents")
+    @app.command(get_command_name("/agents"))
     @slack_command(require_text=False, usage_hint="Usage: /agents [list|run|create|info]")
     async def handle_agents(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /agents command."""

@@ -156,6 +156,30 @@ Configuration is encrypted and stored in `~/.slack-claude-code/config.enc`. Sens
 - `SLACK_APP_TOKEN`: Your App → Basic Information → App-Level Tokens → (token you created with `connections:write`)
 - `SLACK_SIGNING_SECRET`: Your App → Basic Information → App Credentials → Signing Secret
 
+**Optional Configuration:**
+
+You can customize command names by setting `COMMAND_SUFFIX` to add a suffix to all Slack commands:
+
+```bash
+# Example: Add "-cc" suffix to all commands
+ccslack-config set COMMAND_SUFFIX=cc
+
+# Or in .env file:
+COMMAND_SUFFIX=cc
+```
+
+With `COMMAND_SUFFIX=cc`, commands become `/ls-cc`, `/cd-cc`, `/model-cc`, etc. instead of `/ls`, `/cd`, `/model`.
+
+**Use cases:**
+- Avoid command conflicts with other Slack bots
+- Support multiple bot instances (e.g., `dev`, `prod` suffixes)
+- Match team naming conventions
+
+**Format requirements:**
+- Only lowercase letters, numbers, underscore (`_`), and hyphen (`-`)
+- Total command length must not exceed 32 characters
+- Original commands will NOT work when suffix is configured
+
 ### 4. Start the Slack bot
 You can now run `ccslack` in your terminal. The working directory where you start the executable will be the default working directory for your Claude Code session(s). If you have a .env file in this directory, it will automatically be loaded.   
 

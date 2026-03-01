@@ -10,7 +10,7 @@ from slack_bolt.async_app import AsyncApp
 from src.config import config, get_backend_for_model, CLAUDE_MODELS, CODEX_MODELS
 from src.utils.formatting import SlackFormatter
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
@@ -114,7 +114,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 blocks=SlackFormatter.error_message(str(e)),
             )
 
-    @app.command("/clear")
+    @app.command(get_command_name("/clear"))
     @slack_command()
     async def handle_clear(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /clear command - cancel processes and reset Claude conversation."""
@@ -153,7 +153,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             ],
         )
 
-    @app.command("/esc")
+    @app.command(get_command_name("/esc"))
     @slack_command()
     async def handle_esc(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /esc command - interrupt current operation (like pressing Escape)."""
@@ -173,7 +173,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 text=":information_source: No active operations to interrupt.",
             )
 
-    @app.command("/add-dir")
+    @app.command(get_command_name("/add-dir"))
     @slack_command(require_text=True, usage_hint="Usage: /add-dir <path>")
     async def handle_add_dir(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /add-dir <path> command - add directory to context."""
@@ -221,7 +221,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             ],
         )
 
-    @app.command("/remove-dir")
+    @app.command(get_command_name("/remove-dir"))
     @slack_command(require_text=True, usage_hint="Usage: /remove-dir <path>")
     async def handle_remove_dir(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /remove-dir <path> command - remove directory from context."""
@@ -284,7 +284,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             ],
         )
 
-    @app.command("/list-dirs")
+    @app.command(get_command_name("/list-dirs"))
     @slack_command()
     async def handle_list_dirs(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /list-dirs command - list directories in context."""
@@ -320,7 +320,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             ],
         )
 
-    @app.command("/compact")
+    @app.command(get_command_name("/compact"))
     @slack_command()
     async def handle_compact(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /compact [instructions] command - compact conversation."""
@@ -329,37 +329,37 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         else:
             await _send_claude_command(ctx, "/compact", deps)
 
-    @app.command("/cost")
+    @app.command(get_command_name("/cost"))
     @slack_command()
     async def handle_cost(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /cost command - show session cost."""
         await _send_claude_command(ctx, "/cost", deps)
 
-    @app.command("/claude-help")
+    @app.command(get_command_name("/claude-help"))
     @slack_command()
     async def handle_claude_help(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /claude-help command - show Claude Code help."""
         await _send_claude_command(ctx, "/help", deps)
 
-    @app.command("/doctor")
+    @app.command(get_command_name("/doctor"))
     @slack_command()
     async def handle_doctor(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /doctor command - run Claude Code diagnostics."""
         await _send_claude_command(ctx, "/doctor", deps)
 
-    @app.command("/claude-config")
+    @app.command(get_command_name("/claude-config"))
     @slack_command()
     async def handle_claude_config(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /claude-config command - show Claude Code config."""
         await _send_claude_command(ctx, "/config", deps)
 
-    @app.command("/context")
+    @app.command(get_command_name("/context"))
     @slack_command()
     async def handle_context(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /context command - visualize current context usage."""
         await _send_claude_command(ctx, "/context", deps)
 
-    @app.command("/model")
+    @app.command(get_command_name("/model"))
     @slack_command()
     async def handle_model(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /model [name] command - show or change AI model."""
@@ -599,25 +599,25 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 blocks=blocks,
             )
 
-    @app.command("/init")
+    @app.command(get_command_name("/init"))
     @slack_command()
     async def handle_init(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /init command - initialize project with CLAUDE.md."""
         await _send_claude_command(ctx, "/init", deps)
 
-    @app.command("/memory")
+    @app.command(get_command_name("/memory"))
     @slack_command()
     async def handle_memory(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /memory command - edit CLAUDE.md memory files."""
         await _send_claude_command(ctx, "/memory", deps)
 
-    @app.command("/review")
+    @app.command(get_command_name("/review"))
     @slack_command()
     async def handle_review(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /review command - request code review."""
         await _send_claude_command(ctx, "/review", deps)
 
-    @app.command("/permissions")
+    @app.command(get_command_name("/permissions"))
     @slack_command()
     async def handle_permissions(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /permissions command - view or update permissions."""
@@ -652,7 +652,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             ],
         )
 
-    @app.command("/stats")
+    @app.command(get_command_name("/stats"))
     @slack_command()
     async def handle_stats(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /stats command - show usage stats and history."""
@@ -681,13 +681,13 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             ],
         )
 
-    @app.command("/todos")
+    @app.command(get_command_name("/todos"))
     @slack_command()
     async def handle_todos(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /todos command - list current TODO items."""
         await _send_claude_command(ctx, "/todos", deps)
 
-    @app.command("/mcp")
+    @app.command(get_command_name("/mcp"))
     @slack_command()
     async def handle_mcp(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /mcp command - show MCP server configuration."""

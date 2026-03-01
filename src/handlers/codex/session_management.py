@@ -6,13 +6,13 @@ from src.config import config
 from src.pty.pool import PTYSessionPool
 from src.utils.formatting import SlackFormatter
 
-from ..base import CommandContext, HandlerDependencies, slack_command
+from ..base import CommandContext, HandlerDependencies, get_command_name, slack_command
 
 
 def register_codex_session_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
     """Register Codex session management commands."""
 
-    @app.command("/codex-clear")
+    @app.command(get_command_name("/codex-clear"))
     @slack_command()
     async def handle_codex_clear(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Clear the Codex session (start fresh)."""
@@ -38,7 +38,7 @@ def register_codex_session_commands(app: AsyncApp, deps: HandlerDependencies) ->
             ],
         )
 
-    @app.command("/codex-sessions")
+    @app.command(get_command_name("/codex-sessions"))
     @slack_command()
     async def handle_codex_sessions(ctx: CommandContext, deps: HandlerDependencies = deps):
         """List all sessions for this channel."""
@@ -49,7 +49,7 @@ def register_codex_session_commands(app: AsyncApp, deps: HandlerDependencies) ->
             blocks=SlackFormatter.session_list(sessions),
         )
 
-    @app.command("/codex-cleanup")
+    @app.command(get_command_name("/codex-cleanup"))
     @slack_command()
     async def handle_codex_cleanup(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Clean up inactive sessions."""
@@ -70,7 +70,7 @@ def register_codex_session_commands(app: AsyncApp, deps: HandlerDependencies) ->
             blocks=SlackFormatter.session_cleanup_result(deleted_count, days),
         )
 
-    @app.command("/codex-status")
+    @app.command(get_command_name("/codex-status"))
     @slack_command()
     async def handle_codex_status(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Show current Codex session status."""
