@@ -148,8 +148,10 @@ class TestCommandRouter:
             execution_id="exec-4",
         )
 
-        called_prompt = deps.codex_executor.execute.await_args.kwargs["prompt"]
+        kwargs = deps.codex_executor.execute.await_args.kwargs
+        called_prompt = kwargs["prompt"]
         assert "Provide a concrete implementation plan first" in called_prompt
+        assert kwargs["permission_mode"] == "plan"
 
     @pytest.mark.asyncio
     async def test_codex_plan_mode_skips_approval_for_non_plan_output(self):

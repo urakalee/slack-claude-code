@@ -47,6 +47,7 @@ Used by Slack command surfaces:
 - `threadId`
 - `input` (text payload)
 - `effort` (optional, parsed from model suffix like `-high`)
+- `collaborationMode` (optional, set to `plan` when Slack session mode is `plan`)
 
 ## Server Notifications Handled
 

@@ -165,6 +165,7 @@ class SubprocessExecutor:
         on_approval_request: Optional[
             Callable[[str, dict], Awaitable[Optional[dict]]]
         ] = None,
+        permission_mode: Optional[str] = None,
         sandbox_mode: Optional[str] = None,
         approval_mode: Optional[str] = None,
         db_session_id: Optional[int] = None,
@@ -184,6 +185,7 @@ class SubprocessExecutor:
             on_chunk: Async callback for each streamed message.
             on_user_input_request: Callback for request_user_input prompts.
             on_approval_request: Callback for command/file/skill approval prompts.
+            permission_mode: Slack compatibility mode (e.g., "plan", "default").
             sandbox_mode: Sandbox mode (read-only, workspace-write, danger-full-access).
             approval_mode: Approval mode (untrusted, on-request, never).
             db_session_id: Database session ID for tracking.
@@ -218,6 +220,7 @@ class SubprocessExecutor:
             on_chunk=on_chunk,
             on_user_input_request=on_user_input_request,
             on_approval_request=on_approval_request,
+            permission_mode=permission_mode,
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             db_session_id=db_session_id,
@@ -240,6 +243,7 @@ class SubprocessExecutor:
             Callable[[str, dict], Awaitable[Optional[dict]]]
         ],
         on_approval_request: Optional[Callable[[str, dict], Awaitable[Optional[dict]]]],
+        permission_mode: Optional[str],
         sandbox_mode: Optional[str],
         approval_mode: Optional[str],
         db_session_id: Optional[int],
@@ -861,6 +865,7 @@ class SubprocessExecutor:
                     on_chunk=on_chunk,
                     on_user_input_request=on_user_input_request,
                     on_approval_request=on_approval_request,
+                    permission_mode=permission_mode,
                     sandbox_mode=sandbox,
                     approval_mode=approval,
                     db_session_id=db_session_id,
@@ -882,6 +887,22 @@ class SubprocessExecutor:
             }
             if effort:
                 turn_params["effort"] = effort
+            mode = (permission_mode or "").strip().lower()
+            if mode == "plan":
+                collaboration_model = base_model
+                if not collaboration_model:
+                    response_model = (thread_resp.get("result") or {}).get("model")
+                    if isinstance(response_model, str) and response_model.strip():
+                        collaboration_model = response_model
+                if collaboration_model:
+                    turn_params["collaborationMode"] = {
+                        "mode": "plan",
+                        "settings": {
+                            "model": collaboration_model,
+                            "reasoning_effort": effort,
+                            "developer_instructions": None,
+                        },
+                    }
 
             turn_req_id = await send_request("turn/start", turn_params)
             turn_resp = await await_response(turn_req_id)

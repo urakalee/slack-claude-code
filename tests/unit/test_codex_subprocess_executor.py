@@ -175,6 +175,56 @@ class TestCodexSubprocessExecutor:
         assert turn_start["params"]["threadId"] == "thread-1"
         assert turn_start["params"]["effort"] == "high"
         assert turn_start["params"]["input"][0]["text"] == "build feature"
+        assert "collaborationMode" not in turn_start["params"]
+
+    @pytest.mark.asyncio
+    async def test_execute_plan_mode_sets_turn_collaboration_mode(self, monkeypatch):
+        """Plan mode should use native app-server collaborationMode on turn/start."""
+        monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
+
+        process = _DummyProcess(
+            [
+                _json_line({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-1"}, "model": "gpt-5.3-codex"},
+                    }
+                ),
+                _json_line({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {"turn": {"status": "completed"}},
+                    }
+                ),
+            ]
+        )
+
+        executor = SubprocessExecutor()
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            result = await executor.execute(
+                prompt="plan this change",
+                working_directory="/tmp/workspace",
+                model="gpt-5.3-codex-high",
+                permission_mode="plan",
+            )
+
+        assert result.success is True
+        turn_start = _sent_requests(process)[2]
+        assert turn_start["params"]["collaborationMode"] == {
+            "mode": "plan",
+            "settings": {
+                "model": "gpt-5.3-codex",
+                "reasoning_effort": "high",
+                "developer_instructions": None,
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_assistant_deltas_preserve_text_and_skip_completed_duplicate(
