@@ -38,14 +38,14 @@ CLAUDE_ONLY_SLASH_COMMANDS: tuple[str, ...] = (
 
 _CLAUDE_TO_CODEX_HINTS: dict[str, str] = {
     "/compact": "Use `/clear` to reset the conversation in Slack mode.",
-    "/cost": "Use `/codex-status` and per-response footer cost metadata.",
-    "/claude-help": "Use `/codex-status`, `/mode`, and `/model`.",
+    "/cost": "Use `/usage` and per-response footer cost metadata.",
+    "/claude-help": "Use `/usage`, `/mode`, and `/model`.",
     "/doctor": "Use local CLI diagnostics outside Slack.",
-    "/claude-config": "Use `/codex-config`, `/mode approval ...`, and `/mode sandbox ...`.",
-    "/context": "Use Slack thread history and `/codex-status`.",
+    "/claude-config": "Use `/usage`, `/mode approval ...`, and `/mode sandbox ...`.",
+    "/context": "Use Slack thread history and `/usage`.",
     "/init": "Codex does not provide `/init` in this Slack integration.",
     "/memory": "Codex does not use CLAUDE.md memory files.",
-    "/stats": "Use `/codex-metrics` for runtime integration metrics in Codex sessions.",
+    "/stats": "Use `/usage` for Codex session status in Slack integration.",
     "/todos": "Use normal prompts to manage TODO tracking.",
 }
 
@@ -56,9 +56,7 @@ _COMPAT_TO_APPROVAL: dict[str, str] = {
 }
 
 _UNSUPPORTED_COMPAT_MODE_MESSAGES: dict[str, str] = {
-    "accept": (
-        "`/mode accept` maps to Claude file-edit approvals and has no Codex equivalent."
-    ),
+    "accept": ("`/mode accept` maps to Claude file-edit approvals and has no Codex equivalent."),
     "delegate": ("`/mode delegate` is Claude-specific and has no Codex equivalent."),
 }
 
@@ -189,5 +187,5 @@ def get_codex_hint_for_claude_command(command: str) -> str:
     """Get Codex guidance for a Claude-only slash command."""
     return _CLAUDE_TO_CODEX_HINTS.get(
         command,
-        "Use `/codex-status`, `/mode approval ...`, `/mode sandbox ...`, or direct prompts.",
+        "Use `/usage`, `/mode approval ...`, `/mode sandbox ...`, or direct prompts.",
     )

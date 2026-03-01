@@ -103,14 +103,14 @@ class TestCodexCommandHints:
     def test_hint_generation(self):
         """A Codex hint is returned for Claude-only commands."""
         hint = get_codex_hint_for_claude_command("/cost")
-        assert "/codex-status" in hint
+        assert "/usage" in hint
 
-    def test_claude_config_hint_points_to_codex_config(self):
-        """Codex hint for /claude-config should include /codex-config."""
+    def test_claude_config_hint_points_to_usage(self):
+        """Codex hint for /claude-config should include /usage."""
         hint = get_codex_hint_for_claude_command("/claude-config")
-        assert "/codex-config" in hint
+        assert "/usage" in hint
 
-    def test_stats_hint_points_to_codex_metrics(self):
-        """Codex hint for /stats should include /codex-metrics."""
+    def test_stats_hint_points_to_usage(self):
+        """Codex hint for /stats should include /usage."""
         hint = get_codex_hint_for_claude_command("/stats")
-        assert "/codex-metrics" in hint
+        assert "/usage" in hint

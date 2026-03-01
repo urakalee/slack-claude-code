@@ -81,9 +81,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             default_cwd=config.DEFAULT_WORKING_DIR,
         )
         command_name = claude_command.strip().split(" ", 1)[0]
-        if session.get_backend() == "codex" and is_claude_only_slash_command(
-            command_name
-        ):
+        if session.get_backend() == "codex" and is_claude_only_slash_command(command_name):
             hint = get_codex_hint_for_claude_command(command_name)
             await ctx.client.chat_postMessage(
                 channel=ctx.channel_id,
@@ -200,9 +198,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         if cancelled_count > 0:
             message = f"Cancelled {cancelled_count} active process(es) and cleared conversation."
         else:
-            message = (
-                "Conversation cleared. Your next message will start a fresh session."
-            )
+            message = "Conversation cleared. Your next message will start a fresh session."
 
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
@@ -265,9 +261,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         )
 
         # Add resolved directory to session's added_dirs list
-        added_dirs = await deps.db.add_session_dir(
-            ctx.channel_id, ctx.thread_ts, str(resolved_dir)
-        )
+        added_dirs = await deps.db.add_session_dir(ctx.channel_id, ctx.thread_ts, str(resolved_dir))
 
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
@@ -324,9 +318,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             return
 
         # Remove directory from session's added_dirs list
-        remaining_dirs = await deps.db.remove_session_dir(
-            ctx.channel_id, ctx.thread_ts, directory
-        )
+        remaining_dirs = await deps.db.remove_session_dir(ctx.channel_id, ctx.thread_ts, directory)
 
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
@@ -405,6 +397,152 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
         """Handle /cost command - show session cost."""
         await _send_claude_command(ctx, "/cost", deps)
 
+    @app.command("/usage")
+    @slack_command()
+    async def handle_usage(ctx: CommandContext, deps: HandlerDependencies = deps):
+        """Handle /usage command - show usage/cost or Codex session status."""
+        session = await deps.db.get_or_create_session(
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
+        )
+        if session.get_backend() != "codex":
+            await _send_claude_command(ctx, "/cost", deps)
+            return
+
+        sandbox_mode = session.sandbox_mode or config.CODEX_SANDBOX_MODE
+        approval_mode = normalize_codex_approval_mode(
+            session.approval_mode or config.CODEX_APPROVAL_MODE
+        )
+        model = session.model or config.DEFAULT_MODEL or "(default)"
+        has_session = ":white_check_mark:" if session.codex_session_id else ":x:"
+        active_turn_text = ":x:"
+        models_text = "n/a"
+        account_text = "n/a"
+        mcp_text = "n/a"
+        features_text = "n/a"
+
+        if deps.codex_executor:
+            scope = build_session_scope(ctx.channel_id, ctx.thread_ts)
+            active_turn = await deps.codex_executor.get_active_turn(scope)
+            if active_turn:
+                turn_id = active_turn.get("turn_id", "unknown")
+                active_turn_text = f":white_check_mark: `{turn_id}`"
+
+            try:
+                model_list = await deps.codex_executor.model_list(session.working_directory)
+                models_text = str(len(model_list.get("data", [])))
+            except Exception:
+                models_text = "unavailable"
+
+            try:
+                account_read = await deps.codex_executor.account_read(session.working_directory)
+                account = account_read.get("account")
+                if isinstance(account, dict):
+                    account_type = account.get("type", "unknown")
+                    if account_type == "chatgpt":
+                        account_text = (
+                            f"{account_type} ({account.get('planType', 'unknown')}) "
+                            f"{account.get('email', '')}".strip()
+                        )
+                    else:
+                        account_text = account_type
+                else:
+                    account_text = "none"
+            except Exception:
+                account_text = "unavailable"
+
+            try:
+                mcp_status = await deps.codex_executor.mcp_server_status_list(
+                    session.working_directory
+                )
+                mcp_text = str(len(mcp_status.get("data", [])))
+            except Exception:
+                mcp_text = "unavailable"
+
+            try:
+                features = await deps.codex_executor.experimental_feature_list(
+                    session.working_directory
+                )
+                features_text = str(len(features.get("data", [])))
+            except Exception:
+                features_text = "unavailable"
+
+        fields = [
+            {
+                "type": "mrkdwn",
+                "text": f"*Working Dir:*\n`{session.working_directory}`",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Model:*\n`{model}`",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Sandbox:*\n`{sandbox_mode}`",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Approval:*\n`{approval_mode}`",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Active Session:*\n{has_session}",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Session Type:*\n{'Thread' if session.thread_ts else 'Channel'}",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Active Turn:*\n{active_turn_text}",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Available Models:*\n{models_text}",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*Account:*\n{account_text}",
+            },
+            {
+                "type": "mrkdwn",
+                "text": f"*MCP Servers:*\n{mcp_text}",
+            },
+        ]
+        context_text = (
+            f"Last active: {session.last_active.strftime('%Y-%m-%d %H:%M:%S')} • "
+            f"Experimental features: {features_text}"
+        )
+
+        await ctx.client.chat_postMessage(
+            channel=ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            text="Usage",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*Codex Session Status*",
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": fields,
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": context_text,
+                        }
+                    ],
+                },
+            ],
+        )
+
     @app.command("/claude-help")
     @slack_command()
     async def handle_claude_help(ctx: CommandContext, deps: HandlerDependencies = deps):
@@ -419,9 +557,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
 
     @app.command("/claude-config")
     @slack_command()
-    async def handle_claude_config(
-        ctx: CommandContext, deps: HandlerDependencies = deps
-    ):
+    async def handle_claude_config(ctx: CommandContext, deps: HandlerDependencies = deps):
         """Handle /claude-config command - show Claude Code config."""
         await _send_claude_command(ctx, "/config", deps)
 
@@ -522,9 +658,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
 
             backend = get_backend_for_model(normalized)
 
-            await deps.db.update_session_model(
-                ctx.channel_id, ctx.thread_ts, normalized
-            )
+            await deps.db.update_session_model(ctx.channel_id, ctx.thread_ts, normalized)
 
             backend_label = "Claude Code" if backend == "claude" else "OpenAI Codex"
             selected_display = claude_model_display.get(
@@ -652,20 +786,14 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             # Get display name for current model
             all_models = claude_models + codex_models
             current_display = next(
-                (
-                    m["display"]
-                    for m in all_models
-                    if m["value"] == normalized_current_model
-                ),
+                (m["display"] for m in all_models if m["value"] == normalized_current_model),
                 claude_model_display.get(
                     normalized_current_model,
                     normalized_current_model or "Default (recommended)",
                 ),
             )
 
-            backend_label = (
-                "Claude Code" if current_backend == "claude" else "OpenAI Codex"
-            )
+            backend_label = "Claude Code" if current_backend == "claude" else "OpenAI Codex"
 
             # Build button blocks
             blocks = [
@@ -838,9 +966,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             if tokens and tokens[0].lower() in {"status", "read"}:
                 thread_arg = tokens[1] if len(tokens) > 1 else "current"
                 thread_id = (
-                    session.codex_session_id
-                    if thread_arg == "current"
-                    else thread_arg.strip()
+                    session.codex_session_id if thread_arg == "current" else thread_arg.strip()
                 )
                 if not thread_id:
                     await ctx.client.chat_postMessage(
@@ -924,11 +1050,11 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 )
                 if review_thread_id:
                     review_summary += f"\nReview thread: `{review_thread_id}`"
-                    review_summary += f"\nUse `/review status {review_thread_id}` to inspect progress."
-                else:
                     review_summary += (
-                        "\nUse `/review status` to inspect latest turn status."
+                        f"\nUse `/review status {review_thread_id}` to inspect progress."
                     )
+                else:
+                    review_summary += "\nUse `/review status` to inspect latest turn status."
                 await ctx.client.chat_postMessage(
                     channel=ctx.channel_id,
                     thread_ts=ctx.thread_ts,
@@ -1070,9 +1196,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                 )
                 return
             try:
-                status = await deps.codex_executor.mcp_server_status_list(
-                    session.working_directory
-                )
+                status = await deps.codex_executor.mcp_server_status_list(session.working_directory)
                 servers = status.get("data", [])
                 if not servers:
                     summary = "No MCP servers detected."
@@ -1091,9 +1215,7 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                     channel=ctx.channel_id,
                     thread_ts=ctx.thread_ts,
                     text="Codex MCP status",
-                    blocks=[
-                        {"type": "section", "text": {"type": "mrkdwn", "text": summary}}
-                    ],
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": summary}}],
                 )
             except Exception as e:
                 await ctx.client.chat_postMessage(

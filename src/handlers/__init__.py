@@ -22,13 +22,6 @@ from .claude import (
     register_worktree_commands,
 )
 
-# Codex-specific handlers
-from .codex import (
-    register_codex_config_commands,
-    register_codex_session_commands,
-    register_codex_thread_commands,
-)
-
 
 def register_commands(
     app: AsyncApp,
@@ -73,10 +66,5 @@ def register_commands(
     register_git_commands(app, deps)
     register_worktree_commands(app, deps)
     register_cancel_commands(app, deps)
-
-    # Codex-specific handlers
-    register_codex_session_commands(app, deps)
-    register_codex_thread_commands(app, deps)
-    register_codex_config_commands(app, deps)
 
     return deps

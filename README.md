@@ -66,13 +66,7 @@ Use these when your session model is a Codex model.
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `/codex-status` | Show Codex session state and modes | `/codex-status` |
-| `/codex-clear` | Reset only Codex session state | `/codex-clear` |
-| `/codex-sessions` | List channel sessions | `/codex-sessions` |
-| `/codex-cleanup` | Remove inactive sessions | `/codex-cleanup 30` |
-| `/codex-thread` | Manage Codex thread lifecycle | `/codex-thread list` |
-| `/codex-config` | Inspect Codex config, requirements, models, account, features | `/codex-config features` |
-| `/codex-metrics` | Runtime steer/interrupt/queue-fallback metrics | `/codex-metrics` |
+| `/usage` | Show Codex session state and modes | `/usage` |
 
 Codex transport uses `codex app-server` JSON-RPC for all modes.
 See [Codex app-server JSON-RPC integration notes](CODEX_APP_SERVER_JSON_RPC.md) for
@@ -116,6 +110,7 @@ Each Slack thread maintains an isolated Claude session with its own context.
 | `/clear` | Reset conversation | `/clear` |
 | `/compact` | Compact context | `/compact` |
 | `/cost` | Show session cost | `/cost` |
+| `/usage` | Show usage/cost (Claude) or session status (Codex) | `/usage` |
 
 #### Navigation
 Control the working directory and additional directories for Claude's file operations.
