@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from src.handlers import register_commands
+from src.handlers.actions import register_actions
 
 
 class _FakeApp:
@@ -52,3 +53,17 @@ def test_register_commands_excludes_codex_slash_commands():
     assert "/codex-thread" not in app.handlers
     assert "/codex-config" not in app.handlers
     assert "/codex-metrics" not in app.handlers
+
+
+def test_register_actions_includes_worktree_buttons():
+    app = _FakeApp()
+    db = SimpleNamespace()
+    claude_executor = SimpleNamespace()
+    codex_executor = SimpleNamespace()
+
+    deps = register_commands(app, db, claude_executor, codex_executor=codex_executor)
+    register_actions(app, deps)
+
+    assert "worktree_switch" in app.actions
+    assert "worktree_merge_current" in app.actions
+    assert "worktree_remove" in app.actions

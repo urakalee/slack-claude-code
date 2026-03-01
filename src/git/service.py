@@ -48,6 +48,17 @@ class GitService:
         if branch_name.endswith(".lock"):
             raise GitError("Branch name cannot end with '.lock'")
 
+    async def _validate_branch_name_with_git(
+        self, working_directory: str, branch_name: str
+    ) -> None:
+        """Validate branch name with git's native ref validator."""
+        self._validate_branch_name(branch_name)
+        _, stderr, returncode = await self._run_git_command(
+            working_directory, "check-ref-format", "--branch", branch_name
+        )
+        if returncode != 0:
+            raise GitError(f"Invalid branch name: {stderr or branch_name}")
+
     def _validate_commit_message(self, message: str) -> None:
         """Validate commit message is reasonable."""
         if not message or not message.strip():
@@ -295,7 +306,7 @@ class GitService:
             raise GitError("Not a git repository")
 
         # Validate branch name
-        self._validate_branch_name(branch_name)
+        await self._validate_branch_name_with_git(working_directory, branch_name)
 
         if switch:
             args = ["checkout", "-b", branch_name]
@@ -315,7 +326,7 @@ class GitService:
             raise GitError("Not a git repository")
 
         # Validate branch name
-        self._validate_branch_name(branch_name)
+        await self._validate_branch_name_with_git(working_directory, branch_name)
 
         stdout, stderr, returncode = await self._run_git_command(
             working_directory, "checkout", branch_name
@@ -351,6 +362,30 @@ class GitService:
                 branches.append(line)
 
         return branches, current_branch
+
+    async def branch_exists(self, working_directory: str, branch_name: str) -> bool:
+        """Return True when a local branch exists."""
+        if not await self.validate_git_repo(working_directory):
+            raise GitError("Not a git repository")
+
+        self._validate_branch_name(branch_name)
+
+        _, _, returncode = await self._run_git_command(
+            working_directory, "show-ref", "--verify", f"refs/heads/{branch_name}"
+        )
+        return returncode == 0
+
+    async def get_current_branch(self, working_directory: str) -> str:
+        """Get current branch for a worktree directory."""
+        if not await self.validate_git_repo(working_directory):
+            raise GitError("Not a git repository")
+
+        stdout, stderr, returncode = await self._run_git_command(
+            working_directory, "branch", "--show-current"
+        )
+        if returncode != 0:
+            raise GitError(f"Failed to get current branch: {stderr}")
+        return stdout.strip()
 
     # -------------------------------------------------------------------------
     # Worktree Operations
@@ -419,17 +454,31 @@ class GitService:
         current_wt: dict[str, str] = {}
         is_first = True
 
+        def _append_current(wt_data: dict[str, str], is_main: bool) -> None:
+            if not wt_data:
+                return
+            branch = wt_data.get("branch", "").replace("refs/heads/", "")
+            is_detached = wt_data.get("detached", "0") == "1"
+            if is_detached and not branch:
+                branch = "(detached HEAD)"
+            worktrees.append(
+                Worktree(
+                    path=wt_data.get("worktree", ""),
+                    branch=branch,
+                    commit=wt_data.get("HEAD", ""),
+                    is_main=is_main,
+                    is_detached=is_detached,
+                    is_locked=wt_data.get("locked", "0") == "1",
+                    lock_reason=wt_data.get("lock_reason") or None,
+                    is_prunable=wt_data.get("prunable", "0") == "1",
+                    prunable_reason=wt_data.get("prunable_reason") or None,
+                )
+            )
+
         for line in stdout.split("\n"):
             if not line.strip():
                 if current_wt:
-                    worktrees.append(
-                        Worktree(
-                            path=current_wt.get("worktree", ""),
-                            branch=current_wt.get("branch", "").replace("refs/heads/", ""),
-                            commit=current_wt.get("HEAD", ""),
-                            is_main=is_first,
-                        )
-                    )
+                    _append_current(current_wt, is_first)
                     is_first = False
                     current_wt = {}
                 continue
@@ -441,22 +490,27 @@ class GitService:
             elif line.startswith("branch "):
                 current_wt["branch"] = line[len("branch ") :]
             elif line == "detached":
-                current_wt["branch"] = "(detached HEAD)"
+                current_wt["detached"] = "1"
+            elif line == "locked":
+                current_wt["locked"] = "1"
+            elif line.startswith("locked "):
+                current_wt["locked"] = "1"
+                current_wt["lock_reason"] = line[len("locked ") :]
+            elif line == "prunable":
+                current_wt["prunable"] = "1"
+            elif line.startswith("prunable "):
+                current_wt["prunable"] = "1"
+                current_wt["prunable_reason"] = line[len("prunable ") :]
 
         # Handle last entry (no trailing blank line)
         if current_wt:
-            worktrees.append(
-                Worktree(
-                    path=current_wt.get("worktree", ""),
-                    branch=current_wt.get("branch", "").replace("refs/heads/", ""),
-                    commit=current_wt.get("HEAD", ""),
-                    is_main=is_first,
-                )
-            )
+            _append_current(current_wt, is_first)
 
         return worktrees
 
-    async def add_worktree(self, working_directory: str, branch_name: str) -> str:
+    async def add_worktree(
+        self, working_directory: str, branch_name: str, from_ref: Optional[str] = None
+    ) -> str:
         """Create a new worktree with a new branch.
 
         The worktree is placed in a sibling `-worktrees/` directory. For example,
@@ -475,7 +529,7 @@ class GitService:
         str
             Absolute path to the new worktree directory.
         """
-        self._validate_branch_name(branch_name)
+        await self._validate_branch_name_with_git(working_directory, branch_name)
 
         main_root = await self.get_main_worktree(working_directory)
         worktree_base = main_root + "-worktrees"
@@ -487,10 +541,20 @@ class GitService:
         # Create the worktrees base directory if needed
         Path(worktree_base).mkdir(parents=True, exist_ok=True)
 
-        # git worktree add -b <branch> <path>
-        stdout, stderr, returncode = await self._run_git_command(
-            working_directory, "worktree", "add", "-b", branch_name, worktree_path
-        )
+        branch_exists = await self.branch_exists(working_directory, branch_name)
+        args = ["worktree", "add"]
+        if branch_exists:
+            if from_ref:
+                raise GitError(
+                    f"Branch `{branch_name}` already exists; `--from` can only be used for new branches"
+                )
+            args.extend([worktree_path, branch_name])
+        else:
+            args.extend(["-b", branch_name, worktree_path])
+            if from_ref:
+                args.append(from_ref)
+
+        stdout, stderr, returncode = await self._run_git_command(working_directory, *args)
         if returncode != 0:
             raise GitError(f"Failed to create worktree: {stderr}")
 
@@ -528,6 +592,35 @@ class GitService:
 
         return True
 
+    async def prune_worktrees(self, working_directory: str, dry_run: bool = False) -> str:
+        """Prune stale worktree administrative files."""
+        if not await self.validate_git_repo(working_directory):
+            raise GitError("Not a git repository")
+
+        args = ["worktree", "prune"]
+        if dry_run:
+            args.append("--dry-run")
+
+        stdout, stderr, returncode = await self._run_git_command(working_directory, *args)
+        if returncode != 0:
+            raise GitError(f"Failed to prune worktrees: {stderr}")
+        return stdout or "No stale worktrees found."
+
+    async def delete_branch(
+        self, working_directory: str, branch_name: str, force: bool = False
+    ) -> bool:
+        """Delete a local branch."""
+        if not await self.validate_git_repo(working_directory):
+            raise GitError("Not a git repository")
+
+        await self._validate_branch_name_with_git(working_directory, branch_name)
+
+        args = ["branch", "-D" if force else "-d", branch_name]
+        _, stderr, returncode = await self._run_git_command(working_directory, *args)
+        if returncode != 0:
+            raise GitError(f"Failed to delete branch: {stderr}")
+        return True
+
     async def merge_branch(self, working_directory: str, branch_name: str) -> tuple[bool, str]:
         """Merge a branch into the current branch.
 
@@ -546,7 +639,7 @@ class GitService:
         if not await self.validate_git_repo(working_directory):
             raise GitError("Not a git repository")
 
-        self._validate_branch_name(branch_name)
+        await self._validate_branch_name_with_git(working_directory, branch_name)
 
         stdout, stderr, returncode = await self._run_git_command(
             working_directory, "merge", branch_name

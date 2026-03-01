@@ -174,8 +174,17 @@ Full git workflow without leaving Slack. Includes branch name and commit message
 | `/diff` | Show uncommitted changes | `/diff --staged` |
 | `/commit` | Commit staged changes | `/commit fix: resolve race condition` |
 | `/branch` | Manage branches | `/branch create feature/auth` |
-| `/worktree` | Manage worktrees (`add`, `list`, `switch`, `merge`) | `/worktree add feature/auth` |
+| `/worktree` | Manage worktrees (`add`, `list`, `switch`, `merge`, `remove`, `prune`) | `/worktree add feature/auth` |
 | `/wt` | Alias for `/worktree` | `/wt list` |
+
+Worktree command examples:
+- `/worktree add feature/auth --from main`
+- `/worktree add hotfix/login --stay`
+- `/worktree list --verbose`
+- `/worktree merge feature/auth` (merges into your current session worktree branch)
+- `/worktree merge feature/auth --into main`
+- `/worktree remove feature/auth --delete-branch`
+- `/worktree prune --dry-run`
 
 
 ### 3. Configure

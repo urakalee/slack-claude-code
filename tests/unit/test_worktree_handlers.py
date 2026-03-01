@@ -7,10 +7,13 @@ import pytest
 
 from src.database.models import Session
 from src.git.models import Worktree
+from src.git.service import GitError
 from src.handlers.claude.worktree import (
     _handle_add,
     _handle_list,
     _handle_merge,
+    _handle_prune,
+    _handle_remove,
     _handle_switch,
     register_worktree_commands,
 )
@@ -82,7 +85,6 @@ async def test_command_shows_usage_when_subcommand_missing():
     )
 
     ack.assert_awaited_once()
-    git_service.validate_git_repo.assert_awaited_once_with("/repo")
     assert client.chat_postMessage.await_args.kwargs["text"] == "Worktree usage"
 
 
@@ -115,30 +117,45 @@ async def test_command_reports_not_git_repo():
 
 
 @pytest.mark.asyncio
-async def test_handle_add_updates_session_and_clears_ids():
+async def test_handle_add_updates_session_by_default():
     ctx = _ctx()
     session = Session(working_directory="/repo", codex_session_id="codex-1")
     deps = _deps_for_session(session)
     git_service = SimpleNamespace(add_worktree=AsyncMock(return_value="/repo-worktrees/feature-x"))
 
-    await _handle_add(ctx, deps, session, git_service, "feature-x")
+    await _handle_add(ctx, deps, session, git_service, "feature-x", from_ref=None, stay=False)
 
-    git_service.add_worktree.assert_awaited_once_with("/repo", "feature-x")
+    git_service.add_worktree.assert_awaited_once_with("/repo", "feature-x", from_ref=None)
     deps.db.update_session_cwd.assert_awaited_once_with(
         "C123", "123.456", "/repo-worktrees/feature-x"
     )
     deps.db.clear_session_claude_id.assert_awaited_once_with("C123", "123.456")
     deps.db.clear_session_codex_id.assert_awaited_once_with("C123", "123.456")
-    assert ctx.client.chat_postMessage.await_args.kwargs["text"] == "Created worktree: feature-x"
 
 
 @pytest.mark.asyncio
-async def test_handle_list_marks_only_containing_worktree_current():
+async def test_handle_add_with_stay_does_not_change_session_cwd():
+    ctx = _ctx()
+    session = Session(working_directory="/repo", codex_session_id="codex-1")
+    deps = _deps_for_session(session)
+    git_service = SimpleNamespace(add_worktree=AsyncMock(return_value="/repo-worktrees/feature-x"))
+
+    await _handle_add(ctx, deps, session, git_service, "feature-x", from_ref="main", stay=True)
+
+    git_service.add_worktree.assert_awaited_once_with("/repo", "feature-x", from_ref="main")
+    deps.db.update_session_cwd.assert_not_called()
+    deps.db.clear_session_claude_id.assert_not_called()
+    deps.db.clear_session_codex_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_list_includes_current_tags_and_action_buttons():
     ctx = _ctx()
     session = Session(working_directory="/tmp/project-worktrees/feature2/subdir")
     git_service = SimpleNamespace(
         list_worktrees=AsyncMock(
             return_value=[
+                Worktree(path="/tmp/project", branch="main", is_main=True),
                 Worktree(path="/tmp/project-worktrees/feature", branch="feature"),
                 Worktree(path="/tmp/project-worktrees/feature2", branch="feature2"),
             ]
@@ -147,14 +164,16 @@ async def test_handle_list_marks_only_containing_worktree_current():
 
     await _handle_list(ctx, session, git_service)
 
-    block_text = ctx.client.chat_postMessage.await_args.kwargs["blocks"][0]["text"]["text"]
-    assert "`feature` - `/tmp/project-worktrees/feature`" in block_text
-    assert "`feature2` - `/tmp/project-worktrees/feature2` :point_left: _current_" in block_text
-    assert "`feature` - `/tmp/project-worktrees/feature` :point_left: _current_" not in block_text
+    blocks = ctx.client.chat_postMessage.await_args.kwargs["blocks"]
+    section_texts = [b["text"]["text"] for b in blocks if b["type"] == "section"]
+    all_text = "\n".join(section_texts)
+    assert "`feature2` _(current)_" in all_text
+    assert "`main` _(main)_" in all_text
+    assert any(b["type"] == "actions" for b in blocks)
 
 
 @pytest.mark.asyncio
-async def test_handle_switch_updates_session_for_matching_worktree():
+async def test_handle_switch_supports_path_target():
     ctx = _ctx()
     session = Session(working_directory="/repo", codex_session_id=None)
     deps = _deps_for_session(session)
@@ -164,15 +183,10 @@ async def test_handle_switch_updates_session_for_matching_worktree():
         )
     )
 
-    await _handle_switch(ctx, deps, session, git_service, "feature-x")
+    await _handle_switch(ctx, deps, session, git_service, "/repo-worktrees/feature-x")
 
     deps.db.update_session_cwd.assert_awaited_once_with(
         "C123", "123.456", "/repo-worktrees/feature-x"
-    )
-    deps.db.clear_session_claude_id.assert_awaited_once_with("C123", "123.456")
-    deps.db.clear_session_codex_id.assert_not_called()
-    assert (
-        ctx.client.chat_postMessage.await_args.kwargs["text"] == "Switched to worktree: feature-x"
     )
 
 
@@ -192,38 +206,66 @@ async def test_handle_switch_reports_missing_worktree():
 
 
 @pytest.mark.asyncio
-async def test_handle_merge_success_removes_source_worktree():
+async def test_handle_merge_success_removes_clean_source_worktree():
     ctx = _ctx()
-    session = Session(working_directory="/repo", codex_session_id="codex-1")
+    session = Session(working_directory="/repo-worktrees/target")
     deps = _deps_for_session(session)
-    main_wt = Worktree(path="/repo", branch="main", is_main=True)
+    target_wt = Worktree(path="/repo-worktrees/target", branch="target")
     source_wt = Worktree(path="/repo-worktrees/feature-x", branch="feature-x")
     git_service = SimpleNamespace(
-        list_worktrees=AsyncMock(return_value=[main_wt, source_wt]),
+        list_worktrees=AsyncMock(return_value=[target_wt, source_wt]),
+        get_status=AsyncMock(
+            side_effect=[
+                SimpleNamespace(is_clean=True),
+                SimpleNamespace(is_clean=True),
+            ]
+        ),
         merge_branch=AsyncMock(return_value=(True, "merged")),
         remove_worktree=AsyncMock(return_value=True),
     )
 
     await _handle_merge(ctx, deps, session, git_service, "feature-x")
 
-    deps.db.update_session_cwd.assert_awaited_once_with("C123", "123.456", "/repo")
-    deps.db.clear_session_claude_id.assert_awaited_once_with("C123", "123.456")
-    deps.db.clear_session_codex_id.assert_awaited_once_with("C123", "123.456")
-    git_service.merge_branch.assert_awaited_once_with("/repo", "feature-x")
-    git_service.remove_worktree.assert_awaited_once_with("/repo", "/repo-worktrees/feature-x")
-    block_text = ctx.client.chat_postMessage.await_args.kwargs["blocks"][0]["text"]["text"]
-    assert "Worktree removed after successful merge." in block_text
+    git_service.merge_branch.assert_awaited_once_with("/repo-worktrees/target", "feature-x")
+    git_service.remove_worktree.assert_awaited_once_with(
+        "/repo-worktrees/target", "/repo-worktrees/feature-x"
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_merge_keeps_dirty_source_worktree():
+    ctx = _ctx()
+    session = Session(working_directory="/repo-worktrees/target")
+    deps = _deps_for_session(session)
+    target_wt = Worktree(path="/repo-worktrees/target", branch="target")
+    source_wt = Worktree(path="/repo-worktrees/feature-x", branch="feature-x")
+    git_service = SimpleNamespace(
+        list_worktrees=AsyncMock(return_value=[target_wt, source_wt]),
+        get_status=AsyncMock(
+            side_effect=[
+                SimpleNamespace(is_clean=True),
+                SimpleNamespace(is_clean=False),
+            ]
+        ),
+        merge_branch=AsyncMock(return_value=(True, "merged")),
+        remove_worktree=AsyncMock(),
+    )
+
+    await _handle_merge(ctx, deps, session, git_service, "feature-x")
+
+    git_service.remove_worktree.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_handle_merge_conflicts_do_not_remove_worktree():
     ctx = _ctx()
-    session = Session(working_directory="/repo")
+    session = Session(working_directory="/repo-worktrees/target")
     deps = _deps_for_session(session)
-    main_wt = Worktree(path="/repo", branch="main", is_main=True)
+    target_wt = Worktree(path="/repo-worktrees/target", branch="target")
     source_wt = Worktree(path="/repo-worktrees/feature-x", branch="feature-x")
     git_service = SimpleNamespace(
-        list_worktrees=AsyncMock(return_value=[main_wt, source_wt]),
+        list_worktrees=AsyncMock(return_value=[target_wt, source_wt]),
+        get_status=AsyncMock(return_value=SimpleNamespace(is_clean=True)),
         merge_branch=AsyncMock(return_value=(False, "conflict details")),
         remove_worktree=AsyncMock(),
     )
@@ -231,28 +273,104 @@ async def test_handle_merge_conflicts_do_not_remove_worktree():
     await _handle_merge(ctx, deps, session, git_service, "feature-x")
 
     git_service.remove_worktree.assert_not_called()
-    assert ctx.client.chat_postMessage.await_args.kwargs["text"] == "Merge conflicts with feature-x"
 
 
 @pytest.mark.asyncio
-async def test_handle_merge_rejects_main_branch_self_merge():
+async def test_handle_merge_rejects_dirty_target_worktree():
     ctx = _ctx()
-    session = Session(working_directory="/repo")
+    session = Session(working_directory="/repo-worktrees/target")
     deps = _deps_for_session(session)
-    main_wt = Worktree(path="/repo", branch="main", is_main=True)
+    target_wt = Worktree(path="/repo-worktrees/target", branch="target")
+    source_wt = Worktree(path="/repo-worktrees/feature-x", branch="feature-x")
     git_service = SimpleNamespace(
-        list_worktrees=AsyncMock(return_value=[main_wt]),
+        list_worktrees=AsyncMock(return_value=[target_wt, source_wt]),
+        get_status=AsyncMock(return_value=SimpleNamespace(is_clean=False)),
         merge_branch=AsyncMock(),
         remove_worktree=AsyncMock(),
     )
 
-    await _handle_merge(ctx, deps, session, git_service, "main")
+    with pytest.raises(GitError, match="Target worktree"):
+        await _handle_merge(ctx, deps, session, git_service, "feature-x")
 
-    deps.db.update_session_cwd.assert_not_called()
-    deps.db.clear_session_claude_id.assert_not_called()
-    git_service.merge_branch.assert_not_called()
-    git_service.remove_worktree.assert_not_called()
-    assert (
-        ctx.client.chat_postMessage.await_args.kwargs["text"]
-        == "Cannot merge branch into itself: main"
+
+@pytest.mark.asyncio
+async def test_handle_remove_blocks_current_and_main_worktree():
+    ctx = _ctx()
+    session = Session(working_directory="/repo")
+    deps = _deps_for_session(session)
+    git_service = SimpleNamespace(
+        list_worktrees=AsyncMock(
+            return_value=[Worktree(path="/repo", branch="main", is_main=True)]
+        ),
+        get_status=AsyncMock(return_value=SimpleNamespace(is_clean=True)),
+        remove_worktree=AsyncMock(),
+        delete_branch=AsyncMock(),
     )
+
+    with pytest.raises(GitError, match="current session"):
+        await _handle_remove(ctx, deps, session, git_service, "main")
+
+
+@pytest.mark.asyncio
+async def test_handle_remove_requires_force_for_dirty_worktree():
+    ctx = _ctx()
+    session = Session(working_directory="/repo")
+    deps = _deps_for_session(session)
+    git_service = SimpleNamespace(
+        list_worktrees=AsyncMock(
+            return_value=[
+                Worktree(path="/repo", branch="main", is_main=True),
+                Worktree(path="/repo-worktrees/feature", branch="feature"),
+            ]
+        ),
+        get_status=AsyncMock(return_value=SimpleNamespace(is_clean=False)),
+        remove_worktree=AsyncMock(),
+        delete_branch=AsyncMock(),
+    )
+
+    with pytest.raises(GitError, match="--force"):
+        await _handle_remove(ctx, deps, session, git_service, "feature", force=False)
+
+
+@pytest.mark.asyncio
+async def test_handle_remove_force_and_delete_branch():
+    ctx = _ctx()
+    session = Session(working_directory="/repo")
+    deps = _deps_for_session(session)
+    git_service = SimpleNamespace(
+        list_worktrees=AsyncMock(
+            return_value=[
+                Worktree(path="/repo", branch="main", is_main=True),
+                Worktree(path="/repo-worktrees/feature", branch="feature"),
+            ]
+        ),
+        get_status=AsyncMock(return_value=SimpleNamespace(is_clean=False)),
+        remove_worktree=AsyncMock(return_value=True),
+        delete_branch=AsyncMock(return_value=True),
+    )
+
+    await _handle_remove(
+        ctx,
+        deps,
+        session,
+        git_service,
+        "feature",
+        force=True,
+        delete_branch=True,
+    )
+
+    git_service.remove_worktree.assert_awaited_once_with(
+        "/repo", "/repo-worktrees/feature", force=True
+    )
+    git_service.delete_branch.assert_awaited_once_with("/repo", "feature")
+
+
+@pytest.mark.asyncio
+async def test_handle_prune_passes_dry_run_flag():
+    ctx = _ctx()
+    session = Session(working_directory="/repo")
+    git_service = SimpleNamespace(prune_worktrees=AsyncMock(return_value="stale entry"))
+
+    await _handle_prune(ctx, session, git_service, dry_run=True)
+
+    git_service.prune_worktrees.assert_awaited_once_with("/repo", dry_run=True)

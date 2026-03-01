@@ -27,7 +27,11 @@ from src.utils.formatters.tool_blocks import format_tool_detail_blocks
 from src.utils.streaming import StreamingMessageState, create_streaming_callback
 
 from .base import HandlerDependencies
+from .base import CommandContext
+from .claude.worktree import _handle_merge, _handle_remove, _handle_switch
 from .command_router import execute_for_session
+from src.git.service import GitError, GitService
+
 
 async def _get_git_commit_hash(working_directory: str) -> str | None:
     """Get the current git commit hash asynchronously.
@@ -532,6 +536,110 @@ def register_actions(app: AsyncApp, deps: HandlerDependencies) -> None:
                 user=body["user"]["id"],
                 text=f"Job #{job_id} not found or already completed.",
             )
+
+    # -------------------------------------------------------------------------
+    # Worktree action handlers
+    # -------------------------------------------------------------------------
+
+    async def _run_worktree_action(handler, body: dict, action: dict, client, logger) -> None:
+        """Execute a worktree command handler from a button action payload."""
+        try:
+            channel_id = body["channel"]["id"]
+            user_id = body["user"]["id"]
+            thread_ts = body.get("message", {}).get("thread_ts")
+            action_value = action.get("value", "")
+            max_size = config.timeouts.limits.max_action_value_size
+            if len(action_value) > max_size:
+                raise ValueError(f"Payload too large: {len(action_value)} bytes")
+            payload = json.loads(action_value)
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            logger.error(f"Invalid worktree action payload: {e}")
+            await client.chat_postEphemeral(
+                channel=body["channel"]["id"],
+                user=body["user"]["id"],
+                text=f"Invalid worktree action payload: {e}",
+            )
+            return
+
+        session = await deps.db.get_or_create_session(
+            channel_id,
+            thread_ts=thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
+        )
+        ctx = CommandContext(
+            channel_id=channel_id,
+            user_id=user_id,
+            text="",
+            command_name="/worktree",
+            client=client,
+            logger=logger,
+            thread_ts=thread_ts,
+        )
+        git_service = GitService()
+
+        try:
+            await handler(ctx, session, payload, git_service)
+        except GitError as e:
+            await client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=f"Git error: {e}",
+            )
+
+    @app.action("worktree_switch")
+    async def handle_worktree_switch(ack, action, body, client, logger):
+        """Switch session to the selected worktree from list output."""
+        await ack()
+
+        async def _handler(ctx, session, payload, git_service):
+            target = payload.get("branch") or payload.get("path")
+            if not target:
+                raise GitError("Missing worktree target in action payload")
+            await _handle_switch(ctx, deps, session, git_service, target)
+
+        await _run_worktree_action(_handler, body, action, client, logger)
+
+    @app.action("worktree_merge_current")
+    async def handle_worktree_merge_current(ack, action, body, client, logger):
+        """Merge selected worktree branch into the current session worktree."""
+        await ack()
+
+        async def _handler(ctx, session, payload, git_service):
+            source = payload.get("branch") or payload.get("path")
+            if not source:
+                raise GitError("Missing worktree source in action payload")
+            await _handle_merge(
+                ctx,
+                deps,
+                session,
+                git_service,
+                source_target=source,
+                into_target=None,
+                keep_worktree=False,
+            )
+
+        await _run_worktree_action(_handler, body, action, client, logger)
+
+    @app.action("worktree_remove")
+    async def handle_worktree_remove(ack, action, body, client, logger):
+        """Remove selected worktree from list output."""
+        await ack()
+
+        async def _handler(ctx, session, payload, git_service):
+            target = payload.get("branch") or payload.get("path")
+            if not target:
+                raise GitError("Missing worktree target in action payload")
+            await _handle_remove(
+                ctx,
+                deps,
+                session,
+                git_service,
+                target=target,
+                force=False,
+                delete_branch=False,
+            )
+
+        await _run_worktree_action(_handler, body, action, client, logger)
 
     # -------------------------------------------------------------------------
     # Permission approval handlers

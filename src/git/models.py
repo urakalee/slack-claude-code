@@ -70,3 +70,8 @@ class Worktree:
     branch: str
     commit: str = ""
     is_main: bool = False
+    is_detached: bool = False
+    is_locked: bool = False
+    lock_reason: Optional[str] = None
+    is_prunable: bool = False
+    prunable_reason: Optional[str] = None
