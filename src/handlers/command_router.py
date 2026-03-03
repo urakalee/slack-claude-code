@@ -165,26 +165,29 @@ async def execute_for_session(
             )
             return approval_payload_from_decision(method, approved)
 
-        result = await deps.codex_executor.execute(
-            prompt=prompt,
-            working_directory=session.working_directory,
-            session_id=session_scope,
-            resume_session_id=session.codex_session_id,
-            execution_id=execution_id,
-            on_chunk=wrapped_on_chunk,
-            on_user_input_request=on_user_input_request,
-            on_approval_request=on_approval_request,
-            permission_mode=session.permission_mode,
-            sandbox_mode=session.sandbox_mode or config.CODEX_SANDBOX_MODE,
-            approval_mode=session.approval_mode or config.CODEX_APPROVAL_MODE,
-            db_session_id=session.id,
-            model=session.model,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-        )
+        async def run_codex_turn(turn_prompt: str, resume_session_id: Optional[str]) -> Any:
+            result = await deps.codex_executor.execute(
+                prompt=turn_prompt,
+                working_directory=session.working_directory,
+                session_id=session_scope,
+                resume_session_id=resume_session_id,
+                execution_id=execution_id,
+                on_chunk=wrapped_on_chunk,
+                on_user_input_request=on_user_input_request,
+                on_approval_request=on_approval_request,
+                permission_mode=session.permission_mode,
+                sandbox_mode=session.sandbox_mode or config.CODEX_SANDBOX_MODE,
+                approval_mode=session.approval_mode or config.CODEX_APPROVAL_MODE,
+                db_session_id=session.id,
+                model=session.model,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+            )
+            if result.session_id:
+                await deps.db.update_session_codex_id(channel_id, thread_ts, result.session_id)
+            return result
 
-        if result.session_id:
-            await deps.db.update_session_codex_id(channel_id, thread_ts, result.session_id)
+        result = await run_codex_turn(prompt, session.codex_session_id)
 
         if question_count >= max_questions:
             result.output = (
@@ -222,25 +225,10 @@ async def execute_for_session(
                 await deps.db.update_session_mode(channel_id, thread_ts, config.DEFAULT_BYPASS_MODE)
                 session.permission_mode = config.DEFAULT_BYPASS_MODE
 
-                result = await deps.codex_executor.execute(
-                    prompt="Plan approved. Please proceed with the implementation.",
-                    working_directory=session.working_directory,
-                    session_id=session_scope,
-                    resume_session_id=result.session_id,
-                    execution_id=execution_id,
-                    on_chunk=wrapped_on_chunk,
-                    on_user_input_request=on_user_input_request,
-                    on_approval_request=on_approval_request,
-                    permission_mode=session.permission_mode,
-                    sandbox_mode=session.sandbox_mode or config.CODEX_SANDBOX_MODE,
-                    approval_mode=session.approval_mode or config.CODEX_APPROVAL_MODE,
-                    db_session_id=session.id,
-                    model=session.model,
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
+                result = await run_codex_turn(
+                    "Plan approved. Please proceed with the implementation.",
+                    result.session_id,
                 )
-                if result.session_id:
-                    await deps.db.update_session_codex_id(channel_id, thread_ts, result.session_id)
             else:
                 result.success = False
                 result.output = (

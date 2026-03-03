@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 from loguru import logger
 
 from src.backends.process_registry import ProcessRegistry
+from src.backends.process_termination import terminate_processes
 from src.codex.approval_bridge import default_approval_payload
 from src.codex.capabilities import normalize_codex_approval_mode
 from src.config import config, parse_model_effort
@@ -1542,13 +1543,8 @@ class SubprocessExecutor:
                     if scope_state and scope_state.track_id == entry.track_id:
                         self._active_turns_by_scope.pop(active_turn.scope, None)
 
-        processes = [entry.process for entry in tracked]
-        if processes:
-            await asyncio.gather(
-                *(terminate_process_safely(process) for process in processes),
-                return_exceptions=True,
-            )
-        return max(len(processes), initial_count)
+        await terminate_processes(entry.process for entry in tracked)
+        return max(len(tracked), initial_count)
 
     async def cancel_by_channel(self, channel_id: str) -> int:
         """Cancel all active executions for a specific channel.
@@ -1575,13 +1571,8 @@ class SubprocessExecutor:
                     if scope_state and scope_state.track_id == entry.track_id:
                         self._active_turns_by_scope.pop(active_turn.scope, None)
 
-        processes = [entry.process for entry in tracked]
-        if processes:
-            await asyncio.gather(
-                *(terminate_process_safely(process) for process in processes),
-                return_exceptions=True,
-            )
-        return max(len(processes), initial_count)
+        await terminate_processes(entry.process for entry in tracked)
+        return max(len(tracked), initial_count)
 
     async def cancel_all(self) -> int:
         """Cancel all active executions."""
@@ -1597,13 +1588,8 @@ class SubprocessExecutor:
                 active_turn.done_event.set()
             self._active_turns_by_scope.clear()
             self._active_turns_by_track.clear()
-        processes = [entry.process for entry in tracked]
-        if processes:
-            await asyncio.gather(
-                *(terminate_process_safely(process) for process in processes),
-                return_exceptions=True,
-            )
-        return max(len(processes), initial_count)
+        await terminate_processes(entry.process for entry in tracked)
+        return max(len(tracked), initial_count)
 
     async def shutdown(self) -> None:
         """Shutdown and cancel all active executions."""

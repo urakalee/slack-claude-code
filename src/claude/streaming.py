@@ -1,8 +1,9 @@
 import json
-from typing import Iterator, Optional
+from typing import Optional
 
 from loguru import logger
 
+from src.backends.stream_parser_base import BaseStreamParser
 from src.backends.stream_parsing_common import (
     create_tool_activity,
     create_tool_result,
@@ -42,16 +43,11 @@ class ToolActivity(BaseToolActivity):
     SUMMARY_RULES = CLAUDE_TOOL_SUMMARY_RULES
 
 
-class StreamParser:
+class StreamParser(BaseStreamParser):
     """Parser for Claude CLI stream-json output format."""
 
-    def __init__(self):
-        self.buffer = ""
-        self.session_id: Optional[str] = None
-        self.accumulated_content = ""
-        self.accumulated_detailed = ""
-        # Track pending tool uses to link with results
-        self.pending_tools: dict[str, ToolActivity] = {}  # tool_use_id -> ToolActivity
+    def __init__(self) -> None:
+        super().__init__()
 
     def parse_line(self, line: str) -> Optional[StreamMessage]:
         """Parse a single line of stream-json output."""
@@ -305,18 +301,3 @@ class StreamParser:
             )
 
         return StreamMessage(type=msg_type, raw=data)
-
-    def parse_stream(self, stream: Iterator[str]) -> Iterator[StreamMessage]:
-        """Parse a stream of lines."""
-        for line in stream:
-            msg = self.parse_line(line)
-            if msg:
-                yield msg
-
-    def reset(self):
-        """Reset parser state."""
-        self.buffer = ""
-        self.session_id = None
-        self.accumulated_content = ""
-        self.accumulated_detailed = ""
-        self.pending_tools.clear()

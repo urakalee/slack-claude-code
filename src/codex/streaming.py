@@ -1,9 +1,10 @@
 """Parser for Codex CLI stream-json output format."""
 
-from typing import Iterator, Optional
+from typing import Optional
 
 from loguru import logger
 
+from src.backends.stream_parser_base import BaseStreamParser
 from src.backends.stream_parsing_common import (
     create_tool_activity,
     create_tool_result,
@@ -40,7 +41,7 @@ class ToolActivity(BaseToolActivity):
     SUMMARY_RULES = CODEX_TOOL_SUMMARY_RULES
 
 
-class StreamParser:
+class StreamParser(BaseStreamParser):
     """Parser for normalized Codex app-server stream events.
 
     The executor maps app-server JSON-RPC notifications into line-delimited event
@@ -48,20 +49,8 @@ class StreamParser:
     request_user_input, turn.completed, turn.failed).
     """
 
-    def __init__(self):
-        self.buffer = ""
-        self.session_id: Optional[str] = None
-        self.accumulated_content = ""
-        self.accumulated_detailed = ""
-        # Track pending tool uses to link with results
-        self.pending_tools: dict[str, ToolActivity] = {}  # tool_use_id -> ToolActivity
-
-    def _append_assistant_content(self, content: str) -> None:
-        """Append assistant text to accumulated output buffers."""
-        if not content:
-            return
-        self.accumulated_content += content
-        self.accumulated_detailed += content
+    def __init__(self) -> None:
+        super().__init__()
 
     @staticmethod
     def _extract_web_search_query(item: dict) -> str:
@@ -192,9 +181,7 @@ class StreamParser:
             )
 
         elif event_type == "turn.started":
-            return StreamMessage(
-                type="turn_started", session_id=self.session_id, raw=data
-            )
+            return StreamMessage(type="turn_started", session_id=self.session_id, raw=data)
 
         elif event_type == "item.started":
             # New stream format: item lifecycle events.
@@ -255,9 +242,7 @@ class StreamParser:
                     tool_input={"summary": "reasoning in progress"},
                     raw_data=data,
                 )
-            return StreamMessage(
-                type="item_started", session_id=self.session_id, raw=data
-            )
+            return StreamMessage(type="item_started", session_id=self.session_id, raw=data)
 
         elif event_type == "item.completed":
             # New stream format: completed items include assistant messages and command results.
@@ -316,7 +301,9 @@ class StreamParser:
             if item_type == "mcpToolCall":
                 tool_id = str(item.get("id", "unknown"))
                 status = str(item.get("status", "")).lower()
-                content = f"MCP {item.get('server', '')}/{item.get('tool', '')}: {status or 'completed'}"
+                content = (
+                    f"MCP {item.get('server', '')}/{item.get('tool', '')}: {status or 'completed'}"
+                )
                 if status == "failed" and item.get("error"):
                     content += f"\n{item.get('error')}"
                 return self._create_tool_result(
@@ -351,18 +338,14 @@ class StreamParser:
             if item_type == "reasoning":
                 tool_id = str(item.get("id", "unknown"))
                 summary = item.get("summary", [])
-                summary_text = (
-                    "\n".join(summary) if isinstance(summary, list) else str(summary)
-                )
+                summary_text = "\n".join(summary) if isinstance(summary, list) else str(summary)
                 return self._create_tool_result(
                     tool_use_id=tool_id,
                     content=summary_text or "Reasoning complete.",
                     is_error=False,
                     raw_data=data,
                 )
-            return StreamMessage(
-                type="item_completed", session_id=self.session_id, raw=data
-            )
+            return StreamMessage(type="item_completed", session_id=self.session_id, raw=data)
 
         elif event_type == "request_user_input":
             # App-server stream format: request for structured user input.
@@ -380,11 +363,7 @@ class StreamParser:
 
         elif event_type == "turn.failed":
             error_obj = data.get("error", {})
-            error_msg = (
-                error_obj.get("message")
-                if isinstance(error_obj, dict)
-                else str(error_obj)
-            )
+            error_msg = error_obj.get("message") if isinstance(error_obj, dict) else str(error_obj)
             return StreamMessage(
                 type="error",
                 content=str(error_msg or "Codex turn failed"),
@@ -448,18 +427,3 @@ class StreamParser:
 
         # Handle any other message type
         return StreamMessage(type=event_type, raw=data)
-
-    def parse_stream(self, stream: Iterator[str]) -> Iterator[StreamMessage]:
-        """Parse a stream of lines."""
-        for line in stream:
-            msg = self.parse_line(line)
-            if msg:
-                yield msg
-
-    def reset(self):
-        """Reset parser state."""
-        self.buffer = ""
-        self.session_id = None
-        self.accumulated_content = ""
-        self.accumulated_detailed = ""
-        self.pending_tools.clear()
