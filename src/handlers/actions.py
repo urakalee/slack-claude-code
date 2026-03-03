@@ -12,14 +12,7 @@ from src.approval.handler import PermissionManager
 from src.approval.plan_manager import PlanApprovalManager
 from src.approval.slack_ui import build_approval_result_blocks, build_plan_result_blocks
 from src.claude.streaming import ToolActivity
-from src.config import (
-    CODEX_MODELS,
-    EFFORT_LEVELS,
-    config,
-    is_supported_codex_model,
-    looks_like_codex_model,
-    parse_model_effort,
-)
+from src.config import config
 from src.git.service import GitError, GitService
 from src.question.manager import QuestionManager
 from src.question.slack_ui import (
@@ -32,6 +25,11 @@ from src.utils.formatters.command import command_response_with_tables, error_mes
 from src.utils.formatters.job import parallel_job_status, sequential_job_status
 from src.utils.formatters.streaming import processing_message
 from src.utils.formatters.tool_blocks import format_tool_detail_blocks
+from src.utils.model_selection import (
+    codex_model_validation_error,
+    model_display_name,
+    normalize_model_name,
+)
 from src.utils.streaming import StreamingMessageState, create_streaming_callback
 
 from .base import CommandContext, HandlerDependencies
@@ -1275,35 +1273,18 @@ def register_actions(app: AsyncApp, deps: HandlerDependencies) -> None:
         if not model_name:
             return
 
-        base_name, effort = parse_model_effort(model_name)
-        if base_name == "codex":
-            model_name = f"gpt-5.3-codex-{effort}" if effort else "gpt-5.3-codex"
-
-        if model_name in {"default", "recommended", "opus", "claude-opus-4-6"}:
-            model_value = None
-        else:
-            model_value = model_name
-
-        if (
-            model_value
-            and looks_like_codex_model(model_value)
-            and not is_supported_codex_model(model_value)
-        ):
-            supported = "\n".join(f"• `{model}`" for model in sorted(CODEX_MODELS))
-            effort_levels = ", ".join(f"`{level}`" for level in EFFORT_LEVELS)
+        model_value = normalize_model_name(model_name)
+        validation_error = codex_model_validation_error(model_value)
+        if validation_error:
             await client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=thread_ts,
                 text=f"Unsupported Codex model: {model_value}",
-                blocks=error_message(
-                    f"Unsupported Codex model: `{model_value}`\n\n"
-                    f"Supported Codex models:\n{supported}\n\n"
-                    f"Optional effort suffixes: {effort_levels}, `extra-high`"
-                ),
+                blocks=error_message(validation_error),
             )
             return
 
-        display_name = model_value or "Default (recommended)"
+        display_name = model_display_name(model_value)
         await _set_session_model_and_notify(
             deps=deps,
             client=client,
@@ -1329,24 +1310,8 @@ def register_actions(app: AsyncApp, deps: HandlerDependencies) -> None:
         channel_id = value_parts[0]
         thread_ts = value_parts[1] if len(value_parts) > 1 and value_parts[1] else None
 
-        # Normalize Claude picker aliases to model IDs.
-        claude_model_aliases: dict[str, str | None] = {
-            "default": None,
-            "opus-1m": "claude-opus-4-6[1m]",
-            "sonnet": "sonnet",
-            "sonnet-1m": "claude-sonnet-4-6[1m]",
-            "haiku": "haiku",
-        }
-        model_value = claude_model_aliases.get(model_name, model_name)
-
-        model_display = {
-            None: "Default (recommended)",
-            "claude-opus-4-6[1m]": "Opus (1M context)",
-            "sonnet": "Sonnet",
-            "claude-sonnet-4-6[1m]": "Sonnet (1M context)",
-            "haiku": "Haiku",
-        }
-        display_name = model_display.get(model_value, model_name)
+        model_value = normalize_model_name(model_name)
+        display_name = model_display_name(model_value)
 
         await _set_session_model_and_notify(
             deps=deps,

@@ -12,17 +12,19 @@ from src.codex.capabilities import (
     normalize_codex_approval_mode,
 )
 from src.config import (
-    CODEX_MODELS,
-    EFFORT_LEVELS,
     config,
-    get_backend_for_model,
-    is_supported_codex_model,
-    looks_like_codex_model,
-    parse_model_effort,
 )
 from src.utils.execution_scope import build_session_scope
 from src.utils.formatters.command import command_response_with_tables, error_message
 from src.utils.formatters.streaming import processing_message
+from src.utils.model_selection import (
+    CLAUDE_MODEL_DISPLAY,
+    backend_label_for_model,
+    codex_model_validation_error,
+    model_display_name,
+    normalize_current_model,
+    normalize_model_name,
+)
 
 from ..base import CommandContext, HandlerDependencies, slack_command
 
@@ -577,93 +579,24 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             thread_ts=ctx.thread_ts,
             default_cwd=config.DEFAULT_WORKING_DIR,
         )
-        claude_model_display: dict[str | None, str] = {
-            None: "Default (recommended)",
-            "default": "Default (recommended)",
-            "opus": "Default (recommended)",
-            "claude-opus-4-6": "Default (recommended)",
-            "claude-opus-4-6[1m]": "Opus (1M context)",
-            "sonnet": "Sonnet",
-            "claude-sonnet-4-6": "Sonnet",
-            "claude-sonnet-4-6[1m]": "Sonnet (1M context)",
-            "haiku": "Haiku",
-            "claude-haiku-4-5": "Haiku",
-        }
 
         if ctx.text:
             # Direct model selection via command argument
             model_name = ctx.text.strip().lower()
-
-            # Normalize model names (support both Claude and Codex models)
-            claude_base_model_map: dict[str, str | None] = {
-                # Claude models
-                "default": None,
-                "default (recommended)": None,
-                "recommended": None,
-                "opus": None,
-                "opus-4.6": None,
-                "claude-opus-4-6": None,
-                "opus-1m": "claude-opus-4-6[1m]",
-                "opus (1m context)": "claude-opus-4-6[1m]",
-                "claude-opus-4-6[1m]": "claude-opus-4-6[1m]",
-                "sonnet": "sonnet",
-                "sonnet-4.6": "sonnet",
-                "claude-sonnet-4-6": "sonnet",
-                "sonnet-1m": "claude-sonnet-4-6[1m]",
-                "sonnet (1m context)": "claude-sonnet-4-6[1m]",
-                "claude-sonnet-4-6[1m]": "claude-sonnet-4-6[1m]",
-                "haiku": "haiku",
-                "haiku-4.5": "haiku",
-                "claude-haiku-4-5": "haiku",
-            }
-            codex_base_model_map = {
-                # Codex models
-                "codex": "gpt-5.3-codex",
-                "gpt-5.3-codex": "gpt-5.3-codex",
-                "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
-                "gpt-5.2-codex": "gpt-5.2-codex",
-                "gpt-5.1-codex-max": "gpt-5.1-codex-max",
-                "gpt-5.2": "gpt-5.2",
-                "gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
-            }
-            base_name, effort = parse_model_effort(model_name)
-            if base_name in claude_base_model_map:
-                resolved_base = claude_base_model_map[base_name]
-            else:
-                resolved_base = codex_base_model_map.get(base_name, base_name)
-            if resolved_base is None:
-                normalized = None
-            elif effort and looks_like_codex_model(resolved_base):
-                normalized = f"{resolved_base}-{effort}"
-            else:
-                normalized = resolved_base
-
-            if (
-                normalized
-                and looks_like_codex_model(normalized)
-                and not is_supported_codex_model(normalized)
-            ):
-                supported = "\n".join(f"• `{model}`" for model in sorted(CODEX_MODELS))
-                effort_levels = ", ".join(f"`{level}`" for level in EFFORT_LEVELS)
+            normalized = normalize_model_name(model_name)
+            validation_error = codex_model_validation_error(normalized)
+            if validation_error:
                 await ctx.client.chat_postMessage(
                     channel=ctx.channel_id,
                     text=f"Unsupported Codex model: {normalized}",
-                    blocks=error_message(
-                        f"Unsupported Codex model: `{normalized}`\n\n"
-                        f"Supported Codex models:\n{supported}\n\n"
-                        f"Optional effort suffixes: {effort_levels}, `extra-high`"
-                    ),
+                    blocks=error_message(validation_error),
                 )
                 return
 
-            backend = get_backend_for_model(normalized)
-
             await deps.db.update_session_model(ctx.channel_id, ctx.thread_ts, normalized)
 
-            backend_label = "Claude Code" if backend == "claude" else "OpenAI Codex"
-            selected_display = claude_model_display.get(
-                normalized, normalized or "Default (recommended)"
-            )
+            backend_label = backend_label_for_model(normalized)
+            selected_display = model_display_name(normalized)
             model_id_line = ""
             if normalized and selected_display != normalized:
                 model_id_line = f"\n_Model ID: `{normalized}`_"
@@ -685,12 +618,8 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             )
         else:
             # Show current model and allow selection via buttons
-            current_model = session.model
-            if current_model in {"default", "opus", "claude-opus-4-6"}:
-                normalized_current_model = None
-            else:
-                normalized_current_model = current_model
-            current_backend = get_backend_for_model(normalized_current_model)
+            normalized_current_model = normalize_current_model(session.model)
+            current_backend = backend_label_for_model(normalized_current_model)
 
             # Available models (organized by backend)
             claude_models = [
@@ -787,13 +716,10 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
             all_models = claude_models + codex_models
             current_display = next(
                 (m["display"] for m in all_models if m["value"] == normalized_current_model),
-                claude_model_display.get(
-                    normalized_current_model,
-                    normalized_current_model or "Default (recommended)",
+                CLAUDE_MODEL_DISPLAY.get(
+                    normalized_current_model, model_display_name(normalized_current_model)
                 ),
             )
-
-            backend_label = "Claude Code" if current_backend == "claude" else "OpenAI Codex"
 
             # Build button blocks
             blocks = [
@@ -801,7 +727,10 @@ def register_claude_cli_commands(app: AsyncApp, deps: HandlerDependencies) -> No
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*Current Model:* {current_display}\n*Backend:* {backend_label}\n\nSelect a model:",
+                        "text": (
+                            f"*Current Model:* {current_display}\n"
+                            f"*Backend:* {current_backend}\n\nSelect a model:"
+                        ),
                     },
                 },
                 {"type": "divider"},
