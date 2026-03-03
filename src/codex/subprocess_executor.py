@@ -410,6 +410,44 @@ class SubprocessExecutor:
                         return str(value)
             return None
 
+        def _extract_app_server_error_text(params: dict) -> str:
+            """Best-effort extraction for v1/v2 app-server error notification payloads."""
+
+            def _append_unique(parts: list[str], value: str) -> None:
+                text = value.strip()
+                if text and text not in parts:
+                    parts.append(text)
+
+            parts: list[str] = []
+            message = params.get("message")
+            if isinstance(message, str):
+                _append_unique(parts, message)
+
+            error_obj = params.get("error")
+            if isinstance(error_obj, dict):
+                nested_message = error_obj.get("message")
+                if isinstance(nested_message, str):
+                    _append_unique(parts, nested_message)
+
+                details = error_obj.get("additionalDetails")
+                if isinstance(details, str):
+                    _append_unique(parts, details)
+
+                codex_error_info = error_obj.get("codexErrorInfo")
+                if isinstance(codex_error_info, str):
+                    _append_unique(parts, f"codexErrorInfo={codex_error_info}")
+                elif codex_error_info is not None:
+                    _append_unique(
+                        parts,
+                        f"codexErrorInfo={json.dumps(codex_error_info, default=str)}",
+                    )
+            elif isinstance(error_obj, str):
+                _append_unique(parts, error_obj)
+
+            if not parts:
+                return "Codex app-server error"
+            return " | ".join(parts)
+
         async def handle_notification(method: str, params: dict) -> bool:
             nonlocal result_session_id, current_turn_id
 
@@ -535,11 +573,17 @@ class SubprocessExecutor:
                 return True
 
             if method == "error":
+                error_text = _extract_app_server_error_text(params)
+                if params.get("willRetry") is True:
+                    logger.warning(
+                        f"{log_prefix}Transient app-server error (willRetry=true): {error_text}"
+                    )
+                    return False
                 msg = parser.parse_line(
                     json.dumps(
                         {
                             "type": "error",
-                            "error": params.get("message", "Codex app-server error"),
+                            "error": {"message": error_text},
                         }
                     )
                 )

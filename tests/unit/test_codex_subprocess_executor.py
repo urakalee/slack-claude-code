@@ -278,6 +278,107 @@ class TestCodexSubprocessExecutor:
         }
 
     @pytest.mark.asyncio
+    async def test_error_notification_uses_structured_error_payload(self, monkeypatch):
+        """Structured error notifications should surface the nested message and details."""
+        monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
+
+        process = _DummyProcess(
+            [
+                _json_line({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-1"}},
+                    }
+                ),
+                _json_line({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "willRetry": False,
+                            "error": {
+                                "message": "Context window exceeded",
+                                "additionalDetails": "Please compact the thread and retry",
+                                "codexErrorInfo": "contextWindowExceeded",
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+
+        executor = SubprocessExecutor()
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            result = await executor.execute(
+                prompt="analyze quant/options",
+                working_directory="/tmp/workspace",
+            )
+
+        assert result.success is False
+        assert "Context window exceeded" in (result.error or "")
+        assert "Please compact the thread and retry" in (result.error or "")
+        assert "codexErrorInfo=contextWindowExceeded" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_error_notification_with_retry_does_not_end_turn(self, monkeypatch):
+        """Retryable error notifications should not terminate execution early."""
+        monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
+
+        process = _DummyProcess(
+            [
+                _json_line({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-1"}},
+                    }
+                ),
+                _json_line({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "willRetry": True,
+                            "error": {"message": "Responses stream disconnected"},
+                        },
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {"turn": {"status": "completed"}},
+                    }
+                ),
+            ]
+        )
+
+        executor = SubprocessExecutor()
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            result = await executor.execute(
+                prompt="retryable issue",
+                working_directory="/tmp/workspace",
+            )
+
+        assert result.success is True
+        assert result.error is None
+
+    @pytest.mark.asyncio
     async def test_assistant_deltas_preserve_text_and_skip_completed_duplicate(self, monkeypatch):
         """Delta chunks should be concatenated verbatim and not replayed by item/completed."""
         monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
