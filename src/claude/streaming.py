@@ -7,7 +7,6 @@ from src.backends.stream_parser_base import BaseStreamParser
 from src.backends.stream_parsing_common import (
     create_tool_activity,
     create_tool_result,
-    parse_json_line_with_buffer,
 )
 from src.utils.stream_models import (
     BaseToolActivity,
@@ -51,20 +50,12 @@ class StreamParser(BaseStreamParser):
 
     def parse_line(self, line: str) -> Optional[StreamMessage]:
         """Parse a single line of stream-json output."""
-        data, self.buffer, overflow_error = parse_json_line_with_buffer(
-            line=line,
-            buffer=self.buffer,
+        data, overflow_message = self._parse_json_line(
+            line,
             max_buffer_size=MAX_BUFFER_SIZE,
         )
-        if overflow_error:
-            logger.error(
-                f"{overflow_error} This may indicate a malformed JSON stream or extremely large output. Resetting buffer."
-            )
-            return StreamMessage(
-                type="error",
-                content=f"Stream buffer overflow: JSON chunk exceeded {MAX_BUFFER_SIZE // 1024}KB limit",
-                raw={},
-            )
+        if overflow_message:
+            return overflow_message
         if data is None:
             return None
 

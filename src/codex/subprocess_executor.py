@@ -9,12 +9,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from loguru import logger
 
-from src.backends.process_registry import ProcessRegistry
+from src.backends.process_executor_base import ProcessExecutorBase
 from src.backends.process_termination import terminate_processes
 from src.codex.approval_bridge import default_approval_payload
 from src.codex.capabilities import normalize_codex_approval_mode
 from src.config import config, parse_model_effort
-from src.utils.execution_scope import build_session_scope
 from src.utils.process_utils import terminate_process_safely
 
 from .streaming import StreamMessage, StreamParser
@@ -72,19 +71,14 @@ class _ActiveTurnState:
     started_at: float = field(default_factory=time.monotonic)
 
 
-class SubprocessExecutor:
+class SubprocessExecutor(ProcessExecutorBase):
     """Execute Codex via `codex app-server` JSON-RPC over stdio."""
 
     def __init__(
         self,
         db: Optional["DatabaseRepository"] = None,
     ) -> None:
-        self._registry = ProcessRegistry()
-        # Backwards-compatible aliases retained for tests/integration points.
-        self._active_processes = self._registry.active_processes
-        self._process_channels = self._registry.process_channels
-        self._process_scopes = self._registry.process_scopes
-        self._execution_track_ids = self._registry.execution_track_ids
+        super().__init__()
         self._active_turns_by_scope: dict[str, _ActiveTurnState] = {}
         self._active_turns_by_track: dict[str, _ActiveTurnState] = {}
         self._metrics: dict[str, int] = {
@@ -268,17 +262,18 @@ class SubprocessExecutor:
                 error=f"Failed to start codex app-server: {e}",
             )
 
-        track_id = ProcessRegistry.build_track_id(
+        tracking = self.create_tracking_context(
             execution_id=execution_id,
             session_id=session_id,
             channel_id=channel_id,
+            thread_ts=thread_ts,
         )
-        session_scope = build_session_scope(channel_id or "", thread_ts)
-        await self._registry.register(
-            track_id=track_id,
+        track_id = tracking.track_id
+        session_scope = tracking.session_scope
+        await self.register_process(
+            context=tracking,
             process=process,
             channel_id=channel_id,
-            session_scope=session_scope,
             execution_id=execution_id,
         )
 
@@ -1091,7 +1086,10 @@ class SubprocessExecutor:
                             turn_id=current_turn_id,
                         )
                     )
-            await self._registry.unregister(track_id=track_id, execution_id=execution_id)
+            await self.unregister_process(
+                context=tracking,
+                execution_id=execution_id,
+            )
             async with self._lock:
                 if self._active_turns_by_track.get(track_id):
                     self._active_turns_by_track.pop(track_id, None)
