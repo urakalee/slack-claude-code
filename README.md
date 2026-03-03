@@ -160,9 +160,10 @@ Queue commands for sequential execution while preserving Claude's session contex
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/q` | Add command to queue | `/q analyze the API endpoints` |
-| `/qv` | View queue status | `/qv` |
-| `/qc` | Clear pending queue | `/qc` |
-| `/qr` | Remove specific item | `/qr 5` |
+| `/qc view` | View queue status | `/qc view` |
+| `/qc clear` | Clear pending queue | `/qc clear` |
+| `/qc remove` | Remove the next pending item | `/qc remove` |
+| `/qc remove <id>` | Remove a specific pending item | `/qc remove 5` |
 
 Queue scope follows session scope:
 - Channel messages use a channel-level queue

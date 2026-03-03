@@ -6,7 +6,7 @@ from .base import escape_markdown
 
 
 def queue_status(pending: list, running: Any) -> list[dict]:
-    """Format queue status for /qv command."""
+    """Format queue status for /qc view command."""
     blocks = [
         {
             "type": "header",
