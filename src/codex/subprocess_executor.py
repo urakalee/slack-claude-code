@@ -902,24 +902,31 @@ class SubprocessExecutor:
             if effort:
                 turn_params["effort"] = effort
             mode = (permission_mode or "").strip().lower()
+            collaboration_model = base_model
+            if not collaboration_model:
+                response_model = (thread_resp.get("result") or {}).get("model")
+                if isinstance(response_model, str) and response_model.strip():
+                    collaboration_model = response_model
+            collaboration_settings: dict[str, Any] | None = None
+            if collaboration_model:
+                collaboration_settings = {
+                    "model": collaboration_model,
+                    "reasoning_effort": effort,
+                    "developer_instructions": None,
+                }
             if mode == "plan":
-                collaboration_model = base_model
-                if not collaboration_model:
-                    response_model = (thread_resp.get("result") or {}).get("model")
-                    if isinstance(response_model, str) and response_model.strip():
-                        collaboration_model = response_model
-                if collaboration_model:
+                if collaboration_settings:
                     turn_params["collaborationMode"] = {
                         "mode": "plan",
-                        "settings": {
-                            "model": collaboration_model,
-                            "reasoning_effort": effort,
-                            "developer_instructions": None,
-                        },
+                        "settings": collaboration_settings,
                     }
             elif mode:
                 # Explicitly set default mode so resumed plan threads exit plan mode.
-                turn_params["collaborationMode"] = {"mode": "default"}
+                if collaboration_settings:
+                    turn_params["collaborationMode"] = {
+                        "mode": "default",
+                        "settings": collaboration_settings,
+                    }
 
             turn_req_id = await send_request("turn/start", turn_params)
             turn_resp = await await_response(turn_req_id)

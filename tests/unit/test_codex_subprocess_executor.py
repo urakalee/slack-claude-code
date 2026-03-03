@@ -268,7 +268,14 @@ class TestCodexSubprocessExecutor:
 
         assert result.success is True
         turn_start = _sent_requests(process)[2]
-        assert turn_start["params"]["collaborationMode"] == {"mode": "default"}
+        assert turn_start["params"]["collaborationMode"] == {
+            "mode": "default",
+            "settings": {
+                "model": "gpt-5.3-codex",
+                "reasoning_effort": "high",
+                "developer_instructions": None,
+            },
+        }
 
     @pytest.mark.asyncio
     async def test_assistant_deltas_preserve_text_and_skip_completed_duplicate(self, monkeypatch):
