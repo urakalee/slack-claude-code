@@ -486,8 +486,9 @@ class SubprocessExecutor:
                 "item/reasoning/summaryTextDelta",
                 "item/reasoning/summaryPartAdded",
             }:
-                # Keep deltas visible in streaming output for better live progress.
-                return await emit_assistant_delta(str(params.get("delta", "")))
+                # Reasoning deltas frequently contain internal scratchpad text.
+                # Keep these out of user-facing assistant output.
+                return False
 
             if method == "item/started":
                 item = params.get("item", {})
@@ -538,10 +539,15 @@ class SubprocessExecutor:
                     return await handle_stream_message(msg)
                 return False
 
-            if method in {"turn/plan/updated", "turn/diff/updated"}:
-                delta = params.get("diff") or params.get("text") or ""
+            if method == "turn/plan/updated":
+                delta = params.get("text") or ""
                 if delta:
                     return await emit_assistant_delta(str(delta))
+                return False
+
+            if method == "turn/diff/updated":
+                # Diff updates are verbose raw patch data; rely on final assistant
+                # message summaries instead of streaming this directly to Slack.
                 return False
 
             if method == "turn/completed":

@@ -557,6 +557,81 @@ class TestCodexSubprocessExecutor:
         assert result.output == "Final assistant message"
 
     @pytest.mark.asyncio
+    async def test_internal_reasoning_and_diff_deltas_are_not_exposed(self, monkeypatch):
+        """Reasoning and turn diff notifications should not leak into user output."""
+        monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
+
+        process = _DummyProcess(
+            [
+                _json_line({"jsonrpc": "2.0", "id": 1, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"thread": {"id": "thread-1"}},
+                    }
+                ),
+                _json_line({"jsonrpc": "2.0", "id": 3, "result": {}}),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/reasoning/summaryTextDelta",
+                        "params": {"delta": "*Capturing line references*"},
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/diff/updated",
+                        "params": {"diff": "diff --git a/x.py b/x.py\n+raw patch line"},
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/agentMessage/delta",
+                        "params": {"itemId": "item_3", "delta": "Summary only."},
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "item": {
+                                "id": "item_3",
+                                "type": "agentMessage",
+                                "text": "Summary only.",
+                            }
+                        },
+                    }
+                ),
+                _json_line(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {"turn": {"status": "completed"}},
+                    }
+                ),
+            ]
+        )
+
+        executor = SubprocessExecutor()
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ):
+            result = await executor.execute(
+                prompt="summarize changes",
+                working_directory="/tmp/workspace",
+            )
+
+        assert result.success is True
+        assert result.output == "Summary only."
+        assert "diff --git" not in result.output
+        assert "Capturing line references" not in result.output
+
+    @pytest.mark.asyncio
     async def test_user_input_request_uses_callback_response(self, monkeypatch):
         """request_user_input server requests should be answered by callback payload."""
         monkeypatch.setattr(config, "CODEX_PREPEND_DEFAULT_INSTRUCTIONS", False)
