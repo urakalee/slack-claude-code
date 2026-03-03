@@ -59,7 +59,7 @@ Customize Claude's behavior for your workflow.
 | `/model` | Show or change AI model | `/model sonnet` |
 | `/mode` | View or set session mode (Claude and Codex) | `/mode`, `/mode plan`, `/mode bypass`, `/mode approval never`, `/mode sandbox workspace-write` |
 | `/permissions` | View current permission mode (use `/mode` to change) | `/permissions` |
-| `/notifications` | Configure notifications | `/notifications` |
+| `/notifications` | View or configure notifications | `/notifications`, `/notifications on`, `/notifications completion off` |
 
 #### Codex Controls
 Use these when your session model is a Codex model.
@@ -67,8 +67,8 @@ Use these when your session model is a Codex model.
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/usage` | Show Codex session state and modes | `/usage` |
-| `/review` | Start a Codex review for uncommitted changes (or custom target text) | `/review`, `/review review API auth flow` |
-| `/review status [thread_id\|current]` | Inspect latest review/thread lifecycle status | `/review status`, `/review status current` |
+| `/review` | Start a Codex review for uncommitted changes (or custom target text) | `/review`, `/review API auth flow` |
+| `/review status [thread_id\|current]` | Inspect latest review/thread lifecycle status (`read` is accepted as an alias) | `/review status`, `/review status current` |
 | `/mcp` | Show Codex MCP server status | `/mcp` |
 
 Codex transport uses `codex app-server` JSON-RPC for all modes.
@@ -175,7 +175,7 @@ Monitor and control long-running operations with real-time progress updates.
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/st` | Show active job status | `/st` |
-| `/cc` | Cancel tracked background jobs | `/cc` or `/cc abc123` |
+| `/cc` | Cancel tracked background jobs | `/cc` or `/cc 42` |
 | `/cancel` | Cancel active Claude/Codex executions in current channel/thread | `/cancel` |
 | `/c` | Alias for `/cancel` | `/c` |
 | `/esc` | Interrupt current operation (Escape/Ctrl+C style) | `/esc` |
@@ -188,7 +188,7 @@ Full git workflow without leaving Slack. Includes branch name and commit message
 | `/status` | Show branch and changes | `/status` |
 | `/diff` | Show uncommitted changes | `/diff --staged` |
 | `/commit` | Commit staged changes | `/commit fix: resolve race condition` |
-| `/branch` | Manage branches | `/branch create feature/auth` |
+| `/branch` | Show current branch, create, or switch | `/branch`, `/branch create feature/auth`, `/branch switch main` |
 | `/worktree` | Manage worktrees (`add`, `list`, `switch`, `merge`, `remove`, `prune`) | `/worktree add feature/auth` |
 | `/wt` | Alias for `/worktree` | `/wt list` |
 
@@ -200,6 +200,59 @@ Worktree command examples:
 - `/worktree merge feature/auth --into main`
 - `/worktree remove feature/auth --delete-branch`
 - `/worktree prune --dry-run`
+
+#### Worktree Workflow Tutorial
+
+Use this when you want clean isolation for multiple tasks without stashing or branch juggling.
+
+**How worktree + Slack sessions interact**
+- A worktree is a separate directory checked out at a branch.
+- This app stores a working directory per Slack session scope (channel or thread).
+- `/worktree add ...` creates a worktree and switches the current session to it (unless `--stay`).
+- `/worktree switch ...` changes only your Slack session's working directory.
+
+**Workflow 1: Feature branch from `main` to merge and cleanup**
+1. Create and switch to a new worktree:
+   - `/worktree add feature/auth --from main`
+2. Confirm context:
+   - `/pwd`
+   - `/status`
+3. Implement and commit as usual:
+   - `/diff --staged`
+   - `/commit feat: add auth middleware`
+4. Merge into your current target branch:
+   - `/worktree switch main`
+   - `/worktree merge feature/auth`
+5. Remove the finished worktree and local branch:
+   - `/worktree remove feature/auth --delete-branch`
+
+**Workflow 2: Parallel tasks in Slack threads**
+1. In channel root, keep your default worktree for ongoing work.
+2. In thread A:
+   - `/wt add feature/api-cleanup --from main`
+3. In thread B:
+   - `/wt add hotfix/login-timeout --from main`
+4. Work independently in each thread. Each thread has isolated session state and queue scope.
+5. Merge each branch when ready:
+   - `/wt merge <branch>`
+6. Cleanup each finished worktree:
+   - `/wt remove <branch> --delete-branch`
+
+**Workflow 3: Safe cleanup of stale worktrees**
+1. Inspect everything:
+   - `/worktree list --verbose`
+2. Preview prune candidates:
+   - `/worktree prune --dry-run`
+3. Apply prune:
+   - `/worktree prune`
+4. Remove explicit stale worktrees:
+   - `/worktree remove <branch-or-path>`
+   - Add `--force` only when you intentionally want to discard uncommitted changes.
+
+**Common mistakes to avoid**
+- Trying to remove the current or main worktree (blocked by design).
+- Merging into a dirty target worktree (commit or stash first).
+- Assuming `/worktree merge` always keeps source worktree: by default it may auto-remove a clean source worktree unless you pass `--keep-worktree`.
 
 
 ### 3. Configure
