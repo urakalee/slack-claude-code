@@ -49,7 +49,7 @@ Go to https://api.slack.com/apps → "Create New App" → "From scratch"
 
 **Slash Commands**: Add the commands from the tables below (or the subset that you plan to use)
 
-If you want worktree workflows, register both `/worktree` and `/wt` (alias) in Slack.
+If you want worktree workflows, register `/worktree` (and optionally `/wt` as an alias) in Slack.
 
 #### Configuration
 Customize Claude's behavior for your workflow.
@@ -188,10 +188,7 @@ Full git workflow without leaving Slack. Includes branch name and commit message
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `/status` | Show branch and changes | `/status` |
-| `/diff` | Show uncommitted changes | `/diff --staged` |
-| `/commit` | Commit staged changes | `/commit fix: resolve race condition` |
-| `/branch` | Show current branch, create, or switch | `/branch`, `/branch create feature/auth`, `/branch switch main` |
+| `/git` | Consolidated git command (`status`, `diff`, `commit`, `branch`) | `/git status`, `/git diff --staged`, `/git commit fix: race condition`, `/git branch create feature/auth` |
 | `/worktree` | Manage worktrees (`add`, `list`, `switch`, `merge`, `remove`, `prune`) | `/worktree add feature/auth` |
 | `/wt` | Alias for `/worktree` | `/wt list` |
 
@@ -219,10 +216,10 @@ Use this when you want clean isolation for multiple tasks without stashing or br
    - `/worktree add feature/auth --from main`
 2. Confirm context:
    - `/pwd`
-   - `/status`
+   - `/git status`
 3. Implement and commit as usual:
-   - `/diff --staged`
-   - `/commit feat: add auth middleware`
+   - `/git diff --staged`
+   - `/git commit feat: add auth middleware`
 4. Merge into your current target branch:
    - `/worktree switch main`
    - `/worktree merge feature/auth`

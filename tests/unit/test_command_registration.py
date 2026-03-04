@@ -46,6 +46,7 @@ def test_register_commands_excludes_codex_slash_commands():
 
     assert "/usage" in app.handlers
     assert "/clear" in app.handlers
+    assert "/git" in app.handlers
     assert "/codex-status" not in app.handlers
     assert "/codex-clear" not in app.handlers
     assert "/codex-sessions" not in app.handlers
