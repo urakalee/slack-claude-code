@@ -101,6 +101,7 @@ async def execute_for_session(
         pending_question = None
         accumulated_context = ""
         question_count = 0
+        question_limit_reached = False
         max_questions = config.timeouts.execution.max_questions_per_conversation
         codex_turn_index = 1
         tool_id_namespace = f"turn{codex_turn_index}:"
@@ -167,7 +168,7 @@ async def execute_for_session(
                 accumulated_context += msg.content
 
         async def on_user_input_request(tool_use_id: str, tool_input: dict) -> dict | None:
-            nonlocal pending_question, question_count
+            nonlocal pending_question, question_count, question_limit_reached
             if slack_client is None:
                 if pending_question and pending_question.tool_use_id == tool_use_id:
                     await QuestionManager.cancel(pending_question.question_id)
@@ -175,6 +176,7 @@ async def execute_for_session(
                 return None
 
             if question_count >= max_questions:
+                question_limit_reached = True
                 if logger:
                     logger.warning(
                         f"Reached maximum Codex question limit ({max_questions}) "
@@ -250,7 +252,7 @@ async def execute_for_session(
         initial_resume_session_id = await resolve_initial_resume_session_id()
         result = await run_codex_turn(prompt, initial_resume_session_id)
 
-        if question_count >= max_questions:
+        if question_limit_reached:
             result.output = (
                 (result.output or accumulated_context)
                 + f"\n\n_Reached maximum question limit ({max_questions})._"

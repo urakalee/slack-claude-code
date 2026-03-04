@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.config import config
 from src.database.models import Session
 from src.handlers.command_router import execute_for_session, resolve_backend_for_session
 
@@ -403,3 +404,165 @@ class TestCommandRouter:
         )
 
         assert deps.codex_executor.execute.await_args.kwargs["resume_session_id"] == "codex-shared"
+
+    @pytest.mark.asyncio
+    async def test_codex_question_limit_does_not_fail_on_exact_limit(self):
+        """Hitting exactly the question limit should not force a failed result."""
+        deps = SimpleNamespace(
+            db=SimpleNamespace(
+                update_session_claude_id=AsyncMock(),
+                update_session_codex_id=AsyncMock(),
+                update_session_mode=AsyncMock(),
+            ),
+            executor=SimpleNamespace(execute=AsyncMock()),
+            codex_executor=SimpleNamespace(execute=AsyncMock()),
+        )
+
+        async def _fake_codex_execute(**kwargs):
+            payload = await kwargs["on_user_input_request"](
+                "item_1",
+                {
+                    "questions": [
+                        {
+                            "id": "q_1",
+                            "question": "Proceed?",
+                            "header": "Confirm",
+                            "options": [{"label": "Yes", "description": "Continue"}],
+                        }
+                    ]
+                },
+            )
+            assert payload == {"answers": {"q_1": {"answers": ["Yes"]}}}
+            return SimpleNamespace(
+                session_id="codex-new", success=True, output="Implementation complete."
+            )
+
+        deps.codex_executor.execute = AsyncMock(side_effect=_fake_codex_execute)
+        session = Session(
+            id=16,
+            model="gpt-5.3-codex",
+            working_directory="/tmp",
+            codex_session_id="codex-old",
+            sandbox_mode="workspace-write",
+            approval_mode="on-request",
+        )
+        pending_question = SimpleNamespace(question_id="pq1", tool_use_id="item_1")
+
+        with patch.object(config.timeouts.execution, "max_questions_per_conversation", 1):
+            with patch(
+                "src.handlers.command_router.QuestionManager.create_pending_question",
+                new=AsyncMock(return_value=pending_question),
+            ):
+                with patch(
+                    "src.handlers.command_router.QuestionManager.post_question_to_slack",
+                    new=AsyncMock(),
+                ):
+                    with patch(
+                        "src.handlers.command_router.QuestionManager.wait_for_answer",
+                        new=AsyncMock(return_value={0: ["Yes"]}),
+                    ):
+                        with patch(
+                            "src.handlers.command_router.QuestionManager.format_answer_for_codex_request",
+                            return_value={"answers": {"q_1": {"answers": ["Yes"]}}},
+                        ):
+                            routed = await execute_for_session(
+                                deps=deps,
+                                session=session,
+                                prompt="hello",
+                                channel_id="C123",
+                                thread_ts=None,
+                                execution_id="exec-9",
+                                slack_client=SimpleNamespace(),
+                                user_id="U123",
+                            )
+
+        assert routed.result.success is True
+        assert routed.result.output == "Implementation complete."
+
+    @pytest.mark.asyncio
+    async def test_codex_question_limit_still_fails_when_extra_question_requested(self):
+        """A question request beyond the limit should still mark the result as failed."""
+        deps = SimpleNamespace(
+            db=SimpleNamespace(
+                update_session_claude_id=AsyncMock(),
+                update_session_codex_id=AsyncMock(),
+                update_session_mode=AsyncMock(),
+            ),
+            executor=SimpleNamespace(execute=AsyncMock()),
+            codex_executor=SimpleNamespace(execute=AsyncMock()),
+        )
+
+        async def _fake_codex_execute(**kwargs):
+            first_payload = await kwargs["on_user_input_request"](
+                "item_1",
+                {
+                    "questions": [
+                        {
+                            "id": "q_1",
+                            "question": "Proceed?",
+                            "header": "Confirm",
+                            "options": [{"label": "Yes", "description": "Continue"}],
+                        }
+                    ]
+                },
+            )
+            assert first_payload == {"answers": {"q_1": {"answers": ["Yes"]}}}
+            second_payload = await kwargs["on_user_input_request"](
+                "item_2",
+                {
+                    "questions": [
+                        {
+                            "id": "q_2",
+                            "question": "Need another input?",
+                            "header": "Confirm",
+                            "options": [{"label": "No", "description": "Skip"}],
+                        }
+                    ]
+                },
+            )
+            assert second_payload is None
+            return SimpleNamespace(
+                session_id="codex-new", success=True, output="Should not be final success."
+            )
+
+        deps.codex_executor.execute = AsyncMock(side_effect=_fake_codex_execute)
+        session = Session(
+            id=17,
+            model="gpt-5.3-codex",
+            working_directory="/tmp",
+            codex_session_id="codex-old",
+            sandbox_mode="workspace-write",
+            approval_mode="on-request",
+        )
+        pending_question = SimpleNamespace(question_id="pq1", tool_use_id="item_1")
+
+        with patch.object(config.timeouts.execution, "max_questions_per_conversation", 1):
+            with patch(
+                "src.handlers.command_router.QuestionManager.create_pending_question",
+                new=AsyncMock(return_value=pending_question),
+            ):
+                with patch(
+                    "src.handlers.command_router.QuestionManager.post_question_to_slack",
+                    new=AsyncMock(),
+                ):
+                    with patch(
+                        "src.handlers.command_router.QuestionManager.wait_for_answer",
+                        new=AsyncMock(return_value={0: ["Yes"]}),
+                    ):
+                        with patch(
+                            "src.handlers.command_router.QuestionManager.format_answer_for_codex_request",
+                            return_value={"answers": {"q_1": {"answers": ["Yes"]}}},
+                        ):
+                            routed = await execute_for_session(
+                                deps=deps,
+                                session=session,
+                                prompt="hello",
+                                channel_id="C123",
+                                thread_ts=None,
+                                execution_id="exec-10",
+                                slack_client=SimpleNamespace(),
+                                user_id="U123",
+                            )
+
+        assert routed.result.success is False
+        assert "Reached maximum question limit (1)." in routed.result.output

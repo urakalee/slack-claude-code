@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.handlers.claude.queue import (
+    _QUEUE_START_LOCKS,
     _process_queue,
+    _queue_task_id,
     ensure_queue_processor,
     register_queue_commands,
 )
@@ -308,6 +310,30 @@ async def test_ensure_queue_processor_startup_is_serialized():
             )
 
     assert create_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_process_queue_cleans_scope_start_lock_on_exit():
+    """Queue processor should clean up idle startup lock entries when exiting."""
+    _QUEUE_START_LOCKS.clear()
+    thread_ts = "123.4"
+    task_id = _queue_task_id("C123", thread_ts)
+    _QUEUE_START_LOCKS[task_id] = asyncio.Lock()
+
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(return_value=[]),
+        ),
+        codex_executor=None,
+    )
+    client = SimpleNamespace(
+        chat_postMessage=AsyncMock(),
+        chat_update=AsyncMock(),
+    )
+
+    await _process_queue("C123", deps, client, MagicMock(), thread_ts=thread_ts)
+
+    assert task_id not in _QUEUE_START_LOCKS
 
 
 @pytest.mark.asyncio

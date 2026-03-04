@@ -56,8 +56,8 @@ def build_question_blocks(pending: "PendingQuestion", context_text: str = "") ->
             checkbox_blocks = _build_checkbox_block(pending.question_id, i, question)
             blocks.extend(checkbox_blocks)
         else:
-            # For single-select, use buttons (includes "Other" button)
-            blocks.append(_build_button_block(pending.question_id, i, question))
+            # For single-select, use button blocks (includes "Other" button).
+            blocks.extend(_build_button_blocks(pending.question_id, i, question))
 
         # Add option descriptions if any (rich_text for full-width display)
         descriptions = []
@@ -102,11 +102,11 @@ def build_question_blocks(pending: "PendingQuestion", context_text: str = "") ->
     return blocks
 
 
-def _build_button_block(
+def _build_button_blocks(
     question_id: str,
     question_index: int,
     question: "Question",
-) -> dict:
+) -> list[dict]:
     """Build a button block for single-select question.
 
     Args:
@@ -115,7 +115,7 @@ def _build_button_block(
         question: The question object
 
     Returns:
-        Slack actions block with buttons
+        List of Slack actions blocks with buttons
     """
     buttons = []
     for opt in question.options:
@@ -141,28 +141,33 @@ def _build_button_block(
             }
         )
 
-    # Add "Other" button for custom answer (Slack limit: 5 buttons per block)
-    # If we have 4+ options, need a second actions block for the Other button
-    if len(buttons) < 5:
-        other_value = json.dumps({"q": question_id, "i": question_index})
-        buttons.append(
+    # Add "Other" button for custom answer.
+    other_value = json.dumps({"q": question_id, "i": question_index})
+    buttons.append(
+        {
+            "type": "button",
+            "text": {
+                "type": "plain_text",
+                "text": "Other...",
+                "emoji": True,
+            },
+            "action_id": f"question_custom_{question_index}",
+            "value": other_value,
+        }
+    )
+
+    # Slack limit: 5 elements per actions block.
+    button_blocks: list[dict] = []
+    max_buttons_per_block = 5
+    for idx in range(0, len(buttons), max_buttons_per_block):
+        button_blocks.append(
             {
-                "type": "button",
-                "text": {
-                    "type": "plain_text",
-                    "text": "Other...",
-                    "emoji": True,
-                },
-                "action_id": f"question_custom_{question_index}",
-                "value": other_value,
+                "type": "actions",
+                "block_id": f"question_actions_{question_id}_{question_index}_{idx // 5}",
+                "elements": buttons[idx : idx + max_buttons_per_block],
             }
         )
-
-    return {
-        "type": "actions",
-        "block_id": f"question_actions_{question_id}_{question_index}",
-        "elements": buttons[:5],  # Slack limit: 5 elements per actions block
-    }
+    return button_blocks
 
 
 def _build_checkbox_block(
@@ -181,6 +186,7 @@ def _build_checkbox_block(
         List of Slack blocks: section with checkboxes, plus "Other" button
     """
     options = []
+    max_options = 10
     for opt in question.options:
         option_dict = {
             "text": {
@@ -208,7 +214,7 @@ def _build_checkbox_block(
             "accessory": {
                 "type": "checkboxes",
                 "action_id": f"question_multiselect_{question_index}",
-                "options": options[:10],  # Slack limit: 10 options
+                "options": options[:max_options],  # Slack limit: 10 options
             },
         },
         # Add "Other" button for custom answer
@@ -229,6 +235,24 @@ def _build_checkbox_block(
             ],
         },
     ]
+
+    hidden_option_count = len(options) - max_options
+    if hidden_option_count > 0:
+        blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"_Showing first {max_options} options due to Slack limits. "
+                            f"{hidden_option_count} additional option(s) omitted; "
+                            "use `Other...` if needed._"
+                        ),
+                    }
+                ],
+            }
+        )
 
     return blocks
 

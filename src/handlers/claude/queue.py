@@ -79,6 +79,14 @@ async def _get_queue_start_lock(task_id: str) -> asyncio.Lock:
         return _QUEUE_START_LOCKS[task_id]
 
 
+async def _cleanup_queue_start_lock(task_id: str) -> None:
+    """Remove idle startup lock for a scope to avoid unbounded lock-map growth."""
+    async with _QUEUE_START_LOCKS_GUARD:
+        lock = _QUEUE_START_LOCKS.get(task_id)
+        if lock and not lock.locked():
+            _QUEUE_START_LOCKS.pop(task_id, None)
+
+
 async def ensure_queue_processor(
     channel_id: str,
     thread_ts: Optional[str],
@@ -355,6 +363,7 @@ async def _process_queue(
     """Process queue items sequentially for a channel/thread scope."""
     log = task_logger or logger
     scope = build_session_scope(channel_id, thread_ts)
+    task_id = _queue_task_id(channel_id, thread_ts)
     running_item = None
     running_message_ts = None
 
@@ -531,3 +540,5 @@ async def _process_queue(
                     f"in scope {scope}: {notify_error}"
                 )
         raise
+    finally:
+        await _cleanup_queue_start_lock(task_id)

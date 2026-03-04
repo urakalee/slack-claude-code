@@ -86,25 +86,35 @@ class QuestionManager:
         }
         """
         questions = []
-        raw_questions = tool_input.get("questions", [])
+        safe_input = tool_input if isinstance(tool_input, dict) else {}
+        raw_questions = safe_input.get("questions", [])
+        if not isinstance(raw_questions, list):
+            return questions
 
         for q in raw_questions:
+            if not isinstance(q, dict):
+                continue
             options = []
-            for opt in q.get("options", []):
+            raw_options = q.get("options", [])
+            if not isinstance(raw_options, list):
+                raw_options = []
+            for opt in raw_options:
+                if not isinstance(opt, dict):
+                    continue
                 options.append(
                     QuestionOption(
-                        label=opt.get("label", ""),
-                        description=opt.get("description", ""),
+                        label=str(opt.get("label", "")),
+                        description=str(opt.get("description", "")),
                     )
                 )
 
             questions.append(
                 Question(
-                    id=q.get("id", ""),
-                    question=q.get("question", ""),
-                    header=q.get("header", ""),
+                    id=str(q.get("id", "")),
+                    question=str(q.get("question", "")),
+                    header=str(q.get("header", "")),
                     options=options,
-                    multi_select=q.get("multiSelect", False),
+                    multi_select=bool(q.get("multiSelect", False)),
                 )
             )
 
