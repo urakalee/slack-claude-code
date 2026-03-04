@@ -169,6 +169,29 @@ class TestSlackCommandDecorator:
         # blocks should contain error message
 
     @pytest.mark.asyncio
+    async def test_require_text_validation_preserves_thread_scope(self):
+        """Validation errors should reply in-thread when thread_ts is present."""
+        ack = AsyncMock()
+        client = AsyncMock()
+        logger = MagicMock()
+        command = {
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "",
+            "command": "/test",
+            "thread_ts": "123.456",
+        }
+
+        @slack_command(require_text=True, usage_hint="Usage: /test <arg>")
+        async def handler(ctx):
+            raise AssertionError("handler should not run")
+
+        await handler(ack=ack, command=command, client=client, logger=logger)
+
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["thread_ts"] == "123.456"
+
+    @pytest.mark.asyncio
     async def test_require_text_validation_passes(self):
         """require_text=True allows non-empty text."""
         ack = AsyncMock()

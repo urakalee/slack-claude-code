@@ -62,6 +62,21 @@ def _normalize_codex_question_input(tool_name: str, tool_input: dict) -> dict:
     return {"questions": []}
 
 
+def _extract_codex_thread_id(response: dict) -> Optional[str]:
+    """Extract a Codex thread ID from RPC response payload."""
+    thread = response.get("thread")
+    if isinstance(thread, dict):
+        thread_id = thread.get("id")
+        if thread_id:
+            return str(thread_id)
+
+    for key in ("threadId", "id"):
+        thread_id = response.get(key)
+        if thread_id:
+            return str(thread_id)
+    return None
+
+
 async def execute_for_session(
     deps: Any,
     session: Session,
@@ -89,6 +104,51 @@ async def execute_for_session(
         max_questions = config.timeouts.execution.max_questions_per_conversation
         codex_turn_index = 1
         tool_id_namespace = f"turn{codex_turn_index}:"
+
+        async def resolve_initial_resume_session_id() -> Optional[str]:
+            """Fork inherited channel thread IDs when entering a new Slack thread scope."""
+            if thread_ts is None or session.codex_session_id is None:
+                return session.codex_session_id
+
+            channel_session = await deps.db.get_or_create_session(
+                channel_id,
+                thread_ts=None,
+                default_cwd=config.DEFAULT_WORKING_DIR,
+            )
+            if channel_session.codex_session_id != session.codex_session_id:
+                return session.codex_session_id
+
+            try:
+                fork_response = await deps.codex_executor.thread_fork(
+                    thread_id=session.codex_session_id,
+                    working_directory=session.working_directory,
+                )
+            except Exception as e:
+                if logger:
+                    logger.warning(
+                        "Failed to fork inherited Codex thread "
+                        f"{session.codex_session_id} for scope {session_scope}: {e}"
+                    )
+                return session.codex_session_id
+
+            forked_thread_id = _extract_codex_thread_id(fork_response)
+            if not forked_thread_id:
+                if logger:
+                    logger.warning(
+                        "Codex thread fork returned no thread ID for scope "
+                        f"{session_scope}; continuing with inherited thread "
+                        f"{session.codex_session_id}"
+                    )
+                return session.codex_session_id
+
+            await deps.db.update_session_codex_id(channel_id, thread_ts, forked_thread_id)
+            session.codex_session_id = forked_thread_id
+            if logger:
+                logger.info(
+                    f"Forked inherited Codex thread {channel_session.codex_session_id} "
+                    f"to {forked_thread_id} for scope {session_scope}"
+                )
+            return forked_thread_id
 
         async def wrapped_on_chunk(msg: Any) -> None:
             nonlocal accumulated_context
@@ -187,7 +247,8 @@ async def execute_for_session(
                 await deps.db.update_session_codex_id(channel_id, thread_ts, result.session_id)
             return result
 
-        result = await run_codex_turn(prompt, session.codex_session_id)
+        initial_resume_session_id = await resolve_initial_resume_session_id()
+        result = await run_codex_turn(prompt, initial_resume_session_id)
 
         if question_count >= max_questions:
             result.output = (

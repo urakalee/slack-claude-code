@@ -145,13 +145,26 @@ class TestSessionOperations:
         assert session_with_empty.thread_ts is None
 
     @pytest.mark.asyncio
-    async def test_get_or_create_thread_inherits_channel_model(self, db_repo):
-        """New thread sessions inherit channel-level model selection at creation time."""
-        await db_repo.get_or_create_session("C123ABC", None)
+    async def test_get_or_create_thread_inherits_channel_session_context(self, db_repo):
+        """New thread sessions inherit channel-level session context at creation time."""
+        await db_repo.get_or_create_session("C123ABC", None, "/repo")
         await db_repo.update_session_model("C123ABC", None, "gpt-5.3-codex-high")
+        await db_repo.update_session_mode("C123ABC", None, "plan")
+        await db_repo.add_session_dir("C123ABC", None, "/repo/subdir")
+        await db_repo.update_session_claude_id("C123ABC", None, "claude-session-xyz")
+        await db_repo.update_session_codex_id("C123ABC", None, "codex-thread-123")
+        await db_repo.update_session_sandbox_mode("C123ABC", None, "danger-full-access")
+        await db_repo.update_session_approval_mode("C123ABC", None, "never")
 
         thread_session = await db_repo.get_or_create_session("C123ABC", "1234567890.123456")
+        assert thread_session.working_directory == "/repo"
         assert thread_session.model == "gpt-5.3-codex-high"
+        assert thread_session.permission_mode == "plan"
+        assert thread_session.added_dirs == ["/repo/subdir"]
+        assert thread_session.claude_session_id == "claude-session-xyz"
+        assert thread_session.codex_session_id == "codex-thread-123"
+        assert thread_session.sandbox_mode == "danger-full-access"
+        assert thread_session.approval_mode == "never"
 
     @pytest.mark.asyncio
     async def test_update_session_cwd(self, db_repo):

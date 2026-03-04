@@ -60,6 +60,33 @@ async def test_process_queue_marks_failed_when_initial_notification_fails():
 
 
 @pytest.mark.asyncio
+async def test_process_queue_skips_item_if_it_is_removed_before_claim():
+    """Queue worker should skip execution when pending->running claim fails."""
+    item = SimpleNamespace(id=43, prompt="run analysis")
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(side_effect=[[item], []]),
+            update_queue_item_status=AsyncMock(return_value=False),
+            get_or_create_session=AsyncMock(),
+        ),
+        codex_executor=None,
+    )
+    client = SimpleNamespace(
+        chat_postMessage=AsyncMock(),
+        chat_update=AsyncMock(),
+    )
+
+    with patch("src.handlers.claude.queue.execute_for_session", new=AsyncMock()) as mock_execute:
+        with patch("src.handlers.claude.queue.asyncio.sleep", new=AsyncMock()):
+            await _process_queue("C123", deps, client, MagicMock())
+
+    deps.db.update_queue_item_status.assert_awaited_once_with(43, "running")
+    mock_execute.assert_not_awaited()
+    client.chat_postMessage.assert_not_called()
+    client.chat_update.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_process_queue_completes_item_and_updates_message():
     """Successful queue item execution should complete and update Slack message."""
     item = SimpleNamespace(id=7, prompt="run tests")
@@ -201,7 +228,7 @@ async def test_process_queue_waits_for_active_codex_turn():
     item = SimpleNamespace(id=8, prompt="follow up")
     session = SimpleNamespace(id=1)
     route_result = SimpleNamespace(result=SimpleNamespace(success=True, output="ok", error=None))
-    codex_executor = SimpleNamespace(has_active_turn=AsyncMock(side_effect=[True, False]))
+    codex_executor = SimpleNamespace(has_active_turn=AsyncMock(side_effect=[True, False, False]))
     deps = SimpleNamespace(
         db=SimpleNamespace(
             get_pending_queue_items=AsyncMock(side_effect=[[item], []]),

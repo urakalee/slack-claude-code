@@ -123,6 +123,7 @@ def slack_command(
             if require_text and not ctx.text:
                 await client.chat_postMessage(
                     channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
                     blocks=error_message(f"Please provide input. {usage_hint}"),
                 )
                 return
@@ -134,6 +135,7 @@ def slack_command(
             if len(ctx.text) > effective_max_length:
                 await client.chat_postMessage(
                     channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
                     blocks=error_message(
                         f"Input too long ({len(ctx.text):,} chars). "
                         f"Maximum is {effective_max_length:,} characters."
@@ -147,6 +149,7 @@ def slack_command(
                 logger.error(f"Error in {ctx.command_name}: {e}\n{traceback.format_exc()}")
                 await client.chat_postMessage(
                     channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
                     blocks=error_message(str(e)),
                 )
 

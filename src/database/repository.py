@@ -162,23 +162,56 @@ class DatabaseRepository:
 
             # Create new session when none exists.
             model = config.DEFAULT_MODEL
+            working_directory = default_cwd
+            permission_mode = None
+            added_dirs_json = None
+            claude_session_id = None
+            codex_session_id = None
+            sandbox_mode = "workspace-write"
+            approval_mode = "on-request"
             if normalized_thread_ts is not None:
-                # New thread sessions inherit channel-level model selection.
+                # New thread sessions branch from the channel-level session context.
                 channel_cursor = await db.execute(
-                    """SELECT model FROM sessions
+                    """SELECT working_directory, model, permission_mode, added_dirs,
+                              claude_session_id, codex_session_id, sandbox_mode, approval_mode
+                       FROM sessions
                        WHERE channel_id = ? AND thread_ts IS NULL
                        ORDER BY last_active DESC, id DESC
                        LIMIT 1""",
                     (channel_id,),
                 )
                 channel_row = await channel_cursor.fetchone()
-                if channel_row and channel_row[0] is not None:
-                    model = channel_row[0]
+                if channel_row:
+                    if channel_row[0]:
+                        working_directory = channel_row[0]
+                    if channel_row[1] is not None:
+                        model = channel_row[1]
+                    permission_mode = channel_row[2]
+                    added_dirs_json = channel_row[3]
+                    claude_session_id = channel_row[4]
+                    codex_session_id = channel_row[5]
+                    sandbox_mode = channel_row[6] or sandbox_mode
+                    approval_mode = channel_row[7] or approval_mode
 
             cursor = await db.execute(
-                """INSERT INTO sessions (channel_id, thread_ts, working_directory, model, last_active)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (channel_id, normalized_thread_ts, default_cwd, model, now_iso),
+                """INSERT INTO sessions (
+                       channel_id, thread_ts, working_directory, model, permission_mode,
+                       added_dirs, claude_session_id, codex_session_id, sandbox_mode,
+                       approval_mode, last_active
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    channel_id,
+                    normalized_thread_ts,
+                    working_directory,
+                    model,
+                    permission_mode,
+                    added_dirs_json,
+                    claude_session_id,
+                    codex_session_id,
+                    sandbox_mode,
+                    approval_mode,
+                    now_iso,
+                ),
             )
             session_id = cursor.lastrowid
             if session_id is None:
@@ -708,16 +741,23 @@ class DatabaseRepository:
         status: str,
         output: Optional[str] = None,
         error_message: Optional[str] = None,
-    ) -> None:
-        """Update queue item status."""
+    ) -> bool:
+        """Update queue item status.
+
+        Returns
+        -------
+        bool
+            True when at least one row is updated, False otherwise.
+        """
         async with self._get_connection() as db:
             if status == "running":
-                await db.execute(
-                    "UPDATE queue_items SET status = ?, started_at = ? WHERE id = ?",
+                cursor = await db.execute(
+                    "UPDATE queue_items SET status = ?, started_at = ? "
+                    "WHERE id = ? AND status = 'pending'",
                     (status, datetime.now(timezone.utc).isoformat(), item_id),
                 )
             elif status in ("completed", "failed", "cancelled"):
-                await db.execute(
+                cursor = await db.execute(
                     """UPDATE queue_items
                        SET status = ?, output = ?, error_message = ?, completed_at = ?
                        WHERE id = ?""",
@@ -730,11 +770,12 @@ class DatabaseRepository:
                     ),
                 )
             else:
-                await db.execute(
+                cursor = await db.execute(
                     "UPDATE queue_items SET status = ? WHERE id = ?",
                     (status, item_id),
                 )
             await db.commit()
+            return cursor.rowcount > 0
 
     async def remove_queue_item(
         self,

@@ -1,7 +1,7 @@
 """Unit tests for backend-aware command routing."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -22,10 +22,12 @@ class TestCommandRouter:
         """Claude sessions call Claude executor and persist Claude session ID."""
         deps = SimpleNamespace(
             db=SimpleNamespace(
-                update_session_claude_id=AsyncMock(), update_session_codex_id=AsyncMock()
+                update_session_claude_id=AsyncMock(),
+                update_session_codex_id=AsyncMock(),
+                get_or_create_session=AsyncMock(return_value=Session(codex_session_id=None)),
             ),
             executor=SimpleNamespace(execute=AsyncMock()),
-            codex_executor=SimpleNamespace(execute=AsyncMock()),
+            codex_executor=SimpleNamespace(execute=AsyncMock(), thread_fork=AsyncMock()),
         )
         deps.executor.execute.return_value = SimpleNamespace(session_id="claude-new", success=True)
 
@@ -56,10 +58,12 @@ class TestCommandRouter:
         """Codex sessions call Codex executor and persist Codex session ID."""
         deps = SimpleNamespace(
             db=SimpleNamespace(
-                update_session_claude_id=AsyncMock(), update_session_codex_id=AsyncMock()
+                update_session_claude_id=AsyncMock(),
+                update_session_codex_id=AsyncMock(),
+                get_or_create_session=AsyncMock(return_value=Session(codex_session_id=None)),
             ),
             executor=SimpleNamespace(execute=AsyncMock()),
-            codex_executor=SimpleNamespace(execute=AsyncMock()),
+            codex_executor=SimpleNamespace(execute=AsyncMock(), thread_fork=AsyncMock()),
         )
         deps.codex_executor.execute.return_value = SimpleNamespace(
             session_id="codex-new",
@@ -307,3 +311,95 @@ class TestCommandRouter:
 
         assert "turn1:item_1" in tool_ids
         assert "turn2:item_1" in tool_ids
+
+    @pytest.mark.asyncio
+    async def test_execute_for_session_codex_thread_forks_inherited_channel_thread(self):
+        """Thread-scoped Codex sessions should fork inherited channel thread IDs."""
+        deps = SimpleNamespace(
+            db=SimpleNamespace(
+                update_session_claude_id=AsyncMock(),
+                update_session_codex_id=AsyncMock(),
+                get_or_create_session=AsyncMock(
+                    return_value=Session(codex_session_id="codex-shared")
+                ),
+            ),
+            executor=SimpleNamespace(execute=AsyncMock()),
+            codex_executor=SimpleNamespace(
+                execute=AsyncMock(
+                    return_value=SimpleNamespace(session_id="codex-forked", success=True, output="")
+                ),
+                thread_fork=AsyncMock(return_value={"thread": {"id": "codex-forked"}}),
+            ),
+        )
+
+        session = Session(
+            id=14,
+            model="gpt-5.3-codex",
+            working_directory="/tmp",
+            codex_session_id="codex-shared",
+            sandbox_mode="workspace-write",
+            approval_mode="on-request",
+        )
+
+        await execute_for_session(
+            deps=deps,
+            session=session,
+            prompt="hello",
+            channel_id="C123",
+            thread_ts="123.4",
+            execution_id="exec-7",
+        )
+
+        deps.codex_executor.thread_fork.assert_awaited_once_with(
+            thread_id="codex-shared",
+            working_directory="/tmp",
+        )
+        assert deps.codex_executor.execute.await_args.kwargs["resume_session_id"] == "codex-forked"
+        assert deps.db.update_session_codex_id.await_args_list[0].args == (
+            "C123",
+            "123.4",
+            "codex-forked",
+        )
+        assert session.codex_session_id == "codex-forked"
+
+    @pytest.mark.asyncio
+    async def test_execute_for_session_codex_thread_fork_failure_uses_inherited_thread(self):
+        """Fork failures should not block execution for thread-scoped Codex sessions."""
+        deps = SimpleNamespace(
+            db=SimpleNamespace(
+                update_session_claude_id=AsyncMock(),
+                update_session_codex_id=AsyncMock(),
+                get_or_create_session=AsyncMock(
+                    return_value=Session(codex_session_id="codex-shared")
+                ),
+            ),
+            executor=SimpleNamespace(execute=AsyncMock()),
+            codex_executor=SimpleNamespace(
+                execute=AsyncMock(
+                    return_value=SimpleNamespace(session_id="codex-shared", success=True, output="")
+                ),
+                thread_fork=AsyncMock(side_effect=RuntimeError("fork unavailable")),
+            ),
+        )
+
+        session = Session(
+            id=15,
+            model="gpt-5.3-codex",
+            working_directory="/tmp",
+            codex_session_id="codex-shared",
+            sandbox_mode="workspace-write",
+            approval_mode="on-request",
+        )
+        logger = SimpleNamespace(warning=MagicMock(), info=MagicMock())
+
+        await execute_for_session(
+            deps=deps,
+            session=session,
+            prompt="hello",
+            channel_id="C123",
+            thread_ts="123.4",
+            execution_id="exec-8",
+            logger=logger,
+        )
+
+        assert deps.codex_executor.execute.await_args.kwargs["resume_session_id"] == "codex-shared"

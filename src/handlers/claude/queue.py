@@ -360,21 +360,28 @@ async def _process_queue(
 
     try:
         while True:
-            pending = await deps.db.get_pending_queue_items(channel_id, thread_ts)
-            if not pending:
-                log.info(f"Queue empty for scope {scope}, stopping processor")
-                break
-
             # Ensure we never overlap with a currently running Codex turn in this scope.
             while deps.codex_executor and await deps.codex_executor.has_active_turn(scope):
                 log.debug(f"Queue waiting for active Codex turn to finish in scope {scope}")
                 await asyncio.sleep(0.5)
 
+            # Fetch after waiting so we do not act on stale pending snapshots.
+            pending = await deps.db.get_pending_queue_items(channel_id, thread_ts)
+            if not pending:
+                log.info(f"Queue empty for scope {scope}, stopping processor")
+                break
+
             item = pending[0]
             running_item = item
             running_message_ts = None
+            claimed = await deps.db.update_queue_item_status(item.id, "running")
+            if not claimed:
+                log.info(f"Queue item #{item.id} no longer pending in scope {scope}, skipping")
+                running_item = None
+                await asyncio.sleep(0.1)
+                continue
+
             log.info(f"Queue processing item #{item.id} in scope {scope}")
-            await deps.db.update_queue_item_status(item.id, "running")
 
             message_ts = None
             streaming_state = None
