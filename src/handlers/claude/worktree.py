@@ -160,10 +160,15 @@ def register_worktree_commands(app: AsyncApp, deps: HandlerDependencies) -> None
                 await _send_usage(ctx)
                 return
 
-            subcommand = parts[0]
+            subcommand = parts[0].lower()
             args, flags, values = _parse_worktree_tokens(parts[1:])
 
-            if subcommand == "add" and args:
+            if (
+                subcommand == "add"
+                and len(args) == 1
+                and flags.issubset({"--stay"})
+                and set(values.keys()).issubset({"--from"})
+            ):
                 await _handle_add(
                     ctx,
                     deps,
@@ -175,15 +180,25 @@ def register_worktree_commands(app: AsyncApp, deps: HandlerDependencies) -> None
                 )
                 return
 
-            if subcommand == "list":
+            if (
+                subcommand == "list"
+                and not args
+                and flags.issubset({"--verbose"})
+                and not values
+            ):
                 await _handle_list(ctx, session, git_service, verbose=("--verbose" in flags))
                 return
 
-            if subcommand == "switch" and args:
+            if subcommand == "switch" and len(args) == 1 and not flags and not values:
                 await _handle_switch(ctx, deps, session, git_service, args[0])
                 return
 
-            if subcommand == "merge" and args:
+            if (
+                subcommand == "merge"
+                and len(args) == 1
+                and flags.issubset({"--keep-worktree"})
+                and set(values.keys()).issubset({"--into"})
+            ):
                 await _handle_merge(
                     ctx,
                     deps,
@@ -195,7 +210,12 @@ def register_worktree_commands(app: AsyncApp, deps: HandlerDependencies) -> None
                 )
                 return
 
-            if subcommand == "remove" and args:
+            if (
+                subcommand == "remove"
+                and len(args) == 1
+                and flags.issubset({"--force", "--delete-branch"})
+                and not values
+            ):
                 await _handle_remove(
                     ctx,
                     deps,
@@ -207,7 +227,12 @@ def register_worktree_commands(app: AsyncApp, deps: HandlerDependencies) -> None
                 )
                 return
 
-            if subcommand == "prune":
+            if (
+                subcommand == "prune"
+                and not args
+                and flags.issubset({"--dry-run"})
+                and not values
+            ):
                 await _handle_prune(ctx, session, git_service, dry_run=("--dry-run" in flags))
                 return
 

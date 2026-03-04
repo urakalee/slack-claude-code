@@ -117,6 +117,62 @@ async def test_command_reports_not_git_repo():
 
 
 @pytest.mark.asyncio
+async def test_command_rejects_extra_args_for_add():
+    session = Session(working_directory="/repo")
+    deps = _deps_for_session(session)
+    git_service = SimpleNamespace(validate_git_repo=AsyncMock(return_value=True))
+    app = _FakeApp()
+
+    with patch("src.handlers.claude.worktree.GitService", return_value=git_service):
+        register_worktree_commands(app, deps)
+
+    handler = app.handlers["/worktree"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "add feature-x extra",
+            "command": "/worktree",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    assert client.chat_postMessage.await_args.kwargs["text"] == "Worktree usage"
+
+
+@pytest.mark.asyncio
+async def test_command_rejects_invalid_flags_for_list():
+    session = Session(working_directory="/repo")
+    deps = _deps_for_session(session)
+    git_service = SimpleNamespace(validate_git_repo=AsyncMock(return_value=True))
+    app = _FakeApp()
+
+    with patch("src.handlers.claude.worktree.GitService", return_value=git_service):
+        register_worktree_commands(app, deps)
+
+    handler = app.handlers["/worktree"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "list --from main",
+            "command": "/worktree",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    assert client.chat_postMessage.await_args.kwargs["text"] == "Worktree usage"
+
+
+@pytest.mark.asyncio
 async def test_handle_add_updates_session_by_default():
     ctx = _ctx()
     session = Session(working_directory="/repo", codex_session_id="codex-1")
