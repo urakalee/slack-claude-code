@@ -635,30 +635,47 @@ class DatabaseRepository:
         prompt: str,
     ) -> QueueItem:
         """Add a command to the FIFO queue."""
+        normalized_thread_ts = self._normalize_thread_ts(thread_ts)
         async with self._get_connection() as db:
-            # Get next position for this channel/thread scope
-            cursor = await db.execute(
-                """SELECT COALESCE(MAX(position), 0) + 1
-                   FROM queue_items WHERE """
-                + self._QUEUE_SCOPE_WHERE,
-                self._queue_scope_params(channel_id, thread_ts),
-            )
-            position = (await cursor.fetchone())[0]
+            await self._ensure_wal_mode(db)
+            try:
+                # Serialize position assignment per database so concurrent inserts
+                # cannot compute the same MAX(position) value.
+                await db.execute("BEGIN IMMEDIATE")
 
-            cursor = await db.execute(
-                """INSERT INTO queue_items
-                   (session_id, channel_id, thread_ts, prompt, position, status)
-                   VALUES (?, ?, ?, ?, ?, 'pending')""",
-                (session_id, channel_id, thread_ts, prompt, position),
-            )
-            await db.commit()
+                cursor = await db.execute(
+                    """SELECT COALESCE(MAX(position), 0) + 1
+                       FROM queue_items WHERE """
+                    + self._QUEUE_SCOPE_WHERE,
+                    self._queue_scope_params(channel_id, normalized_thread_ts),
+                )
+                position = (await cursor.fetchone())[0]
 
-            cursor = await db.execute(
-                f"SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE id = ?",
-                (cursor.lastrowid,),
-            )
-            row = await cursor.fetchone()
-            return QueueItem.from_row(row)
+                cursor = await db.execute(
+                    """INSERT INTO queue_items
+                       (session_id, channel_id, thread_ts, prompt, position, status)
+                       VALUES (?, ?, ?, ?, ?, 'pending')""",
+                    (session_id, channel_id, normalized_thread_ts, prompt, position),
+                )
+                item_id = cursor.lastrowid
+                if item_id is None:
+                    raise RuntimeError(
+                        f"Failed to add queue item for channel {channel_id} thread {thread_ts}"
+                    )
+
+                cursor = await db.execute(
+                    f"SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE id = ?",
+                    (item_id,),
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    raise RuntimeError(f"Failed to load queue item #{item_id}")
+
+                await db.commit()
+                return QueueItem.from_row(row)
+            except Exception:
+                await db.rollback()
+                raise
 
     async def get_pending_queue_items(
         self, channel_id: str, thread_ts: Optional[str]
@@ -669,7 +686,7 @@ class DatabaseRepository:
                 f"""SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE """
                 + self._QUEUE_SCOPE_WHERE
                 + """ AND status = 'pending'
-                   ORDER BY position ASC""",
+                   ORDER BY position ASC, id ASC""",
                 self._queue_scope_params(channel_id, thread_ts),
             )
             rows = await cursor.fetchall()

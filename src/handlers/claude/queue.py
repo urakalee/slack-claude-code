@@ -430,29 +430,53 @@ async def _process_queue(
                         error_message=result.error,
                     )
 
-                await client.chat_update(
-                    channel=channel_id,
-                    ts=message_ts,
-                    text=f"Completed queue item #{item.id}",
-                    blocks=queue_item_complete(item, result),
-                )
+                try:
+                    await client.chat_update(
+                        channel=channel_id,
+                        ts=message_ts,
+                        text=f"Completed queue item #{item.id}",
+                        blocks=queue_item_complete(item, result),
+                    )
+                except Exception as notify_error:
+                    log.error(
+                        f"Failed to update completion message for queue item {item.id} in scope "
+                        f"{scope}: {notify_error}"
+                    )
+                    try:
+                        await client.chat_postMessage(
+                            channel=channel_id,
+                            thread_ts=thread_ts,
+                            text=f"Completed queue item #{item.id}",
+                            blocks=queue_item_complete(item, result),
+                        )
+                    except Exception as fallback_notify_error:
+                        log.error(
+                            f"Failed to post fallback completion message for queue item "
+                            f"{item.id} in scope {scope}: {fallback_notify_error}"
+                        )
 
             except Exception as e:
                 log.error(f"Queue item {item.id} failed in scope {scope}: {e}")
                 await deps.db.update_queue_item_status(item.id, "failed", error_message=str(e))
-                if message_ts:
-                    await client.chat_update(
-                        channel=channel_id,
-                        ts=message_ts,
-                        text=f"Queue item #{item.id} failed",
-                        blocks=error_message(f"Queue item failed: {e}"),
-                    )
-                else:
-                    await client.chat_postMessage(
-                        channel=channel_id,
-                        thread_ts=thread_ts,
-                        text=f"Queue item #{item.id} failed",
-                        blocks=error_message(f"Queue item failed: {e}"),
+                try:
+                    if message_ts:
+                        await client.chat_update(
+                            channel=channel_id,
+                            ts=message_ts,
+                            text=f"Queue item #{item.id} failed",
+                            blocks=error_message(f"Queue item failed: {e}"),
+                        )
+                    else:
+                        await client.chat_postMessage(
+                            channel=channel_id,
+                            thread_ts=thread_ts,
+                            text=f"Queue item #{item.id} failed",
+                            blocks=error_message(f"Queue item failed: {e}"),
+                        )
+                except Exception as notify_error:
+                    log.error(
+                        f"Failed to send failure notification for queue item {item.id} in "
+                        f"scope {scope}: {notify_error}"
                     )
             finally:
                 if streaming_state:
@@ -469,18 +493,24 @@ async def _process_queue(
                 "cancelled",
                 error_message="Queue processor cancelled",
             )
-            if running_message_ts:
-                await client.chat_update(
-                    channel=channel_id,
-                    ts=running_message_ts,
-                    text=f"Queue item #{running_item.id} cancelled",
-                    blocks=error_message("Queue item cancelled while processing."),
-                )
-            else:
-                await client.chat_postMessage(
-                    channel=channel_id,
-                    thread_ts=thread_ts,
-                    text=f"Queue item #{running_item.id} cancelled",
-                    blocks=error_message("Queue item cancelled while processing."),
+            try:
+                if running_message_ts:
+                    await client.chat_update(
+                        channel=channel_id,
+                        ts=running_message_ts,
+                        text=f"Queue item #{running_item.id} cancelled",
+                        blocks=error_message("Queue item cancelled while processing."),
+                    )
+                else:
+                    await client.chat_postMessage(
+                        channel=channel_id,
+                        thread_ts=thread_ts,
+                        text=f"Queue item #{running_item.id} cancelled",
+                        blocks=error_message("Queue item cancelled while processing."),
+                    )
+            except Exception as notify_error:
+                log.error(
+                    f"Failed to send cancellation notification for queue item {running_item.id} "
+                    f"in scope {scope}: {notify_error}"
                 )
         raise

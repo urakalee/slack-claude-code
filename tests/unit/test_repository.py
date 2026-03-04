@@ -1,5 +1,7 @@
 """Unit tests for database repository."""
 
+import asyncio
+
 import aiosqlite
 import pytest
 import pytest_asyncio
@@ -358,6 +360,20 @@ class TestQueueOperations:
         assert item1.position == 1
         assert item2.position == 2
         assert item3.position == 3
+
+    @pytest.mark.asyncio
+    async def test_add_to_queue_concurrent_unique_positions(self, db_repo):
+        """add_to_queue should assign unique positions under concurrent inserts."""
+        session = await db_repo.get_or_create_session("C123ABC", None)
+        items = await asyncio.gather(
+            *[db_repo.add_to_queue(session.id, "C123ABC", None, f"cmd-{i}") for i in range(20)]
+        )
+
+        positions = sorted(item.position for item in items)
+        assert positions == list(range(1, 21))
+
+        pending = await db_repo.get_pending_queue_items("C123ABC", None)
+        assert [item.position for item in pending] == list(range(1, 21))
 
     @pytest.mark.asyncio
     async def test_get_pending_queue_items(self, db_repo):

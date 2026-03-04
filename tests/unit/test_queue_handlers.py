@@ -95,6 +95,69 @@ async def test_process_queue_completes_item_and_updates_message():
 
 
 @pytest.mark.asyncio
+async def test_process_queue_completion_update_failure_keeps_completed_status():
+    """Completion Slack update failures should not flip successful item to failed."""
+    item = SimpleNamespace(id=71, prompt="run tests")
+    session = SimpleNamespace(id=1)
+    route_result = SimpleNamespace(
+        result=SimpleNamespace(success=True, output="done", error=None),
+    )
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(side_effect=[[item], []]),
+            update_queue_item_status=AsyncMock(),
+            get_or_create_session=AsyncMock(return_value=session),
+        ),
+        codex_executor=None,
+    )
+    client = SimpleNamespace(
+        chat_postMessage=AsyncMock(return_value={"ts": "123.456"}),
+        chat_update=AsyncMock(side_effect=Exception("slack update failed")),
+    )
+
+    with patch(
+        "src.handlers.claude.queue.execute_for_session",
+        new=AsyncMock(return_value=route_result),
+    ):
+        with patch("src.handlers.claude.queue.asyncio.sleep", new=AsyncMock()):
+            await _process_queue("C123", deps, client, MagicMock())
+
+    statuses = [call.args[1] for call in deps.db.update_queue_item_status.await_args_list]
+    assert statuses == ["running", "completed"]
+    assert client.chat_postMessage.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_process_queue_failure_notification_error_does_not_crash_worker():
+    """Slack notification failures in exception path should be logged, not raised."""
+    item = SimpleNamespace(id=72, prompt="run tests")
+    session = SimpleNamespace(id=1)
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(side_effect=[[item], []]),
+            update_queue_item_status=AsyncMock(),
+            get_or_create_session=AsyncMock(return_value=session),
+        ),
+        codex_executor=None,
+    )
+    client = SimpleNamespace(
+        chat_postMessage=AsyncMock(return_value={"ts": "123.456"}),
+        chat_update=AsyncMock(side_effect=Exception("slack update failed")),
+    )
+
+    with patch(
+        "src.handlers.claude.queue.execute_for_session",
+        new=AsyncMock(side_effect=Exception("execution failed")),
+    ):
+        with patch("src.handlers.claude.queue.asyncio.sleep", new=AsyncMock()):
+            await _process_queue("C123", deps, client, MagicMock())
+
+    statuses = [call.args[1] for call in deps.db.update_queue_item_status.await_args_list]
+    assert statuses == ["running", "failed"]
+    client.chat_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_process_queue_streams_updates_during_execution():
     """Queue item execution should stream intermediate output updates."""
     item = SimpleNamespace(id=70, prompt="run tests")
