@@ -28,7 +28,7 @@ class DetailCache:
     """
 
     _cache: OrderedDict[int, CachedDetail] = OrderedDict()
-    _max_age_seconds: int = 3600  # 1 hour default
+    _max_age_seconds: int = 28800  # 8 hour default
     _max_entries: int = 1000  # Maximum cached entries
 
     @classmethod

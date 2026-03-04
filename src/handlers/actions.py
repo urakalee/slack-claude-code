@@ -1142,7 +1142,7 @@ def register_actions(app: AsyncApp, deps: HandlerDependencies) -> None:
             await client.chat_postEphemeral(
                 channel=body["channel"]["id"],
                 user=body["user"]["id"],
-                text="Detailed output is no longer available (expired after 1 hour).",
+                text="Detailed output is no longer available (expired after 8 hours).",
             )
             return
 
