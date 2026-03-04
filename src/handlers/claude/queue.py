@@ -1,4 +1,4 @@
-"""Queue command handlers: /q, /qv, /qclear, and /qr."""
+"""Queue command handlers: /q, /qc, /qv, /qclear, and /qr."""
 
 import asyncio
 from typing import Optional
@@ -16,6 +16,7 @@ from src.utils.formatters.queue import (
     queue_item_running,
     queue_status,
 )
+from src.utils.streaming import StreamingMessageState, create_streaming_callback
 
 from ..base import CommandContext, HandlerDependencies, slack_command
 from ..command_router import execute_for_session
@@ -148,19 +149,7 @@ def register_queue_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
 
         await ensure_queue_processor(ctx.channel_id, ctx.thread_ts, deps, ctx.client, ctx.logger)
 
-    @app.command("/qv")
-    @slack_command()
-    async def handle_queue_view(ctx: CommandContext, deps: HandlerDependencies = deps):
-        """Handle /qv command - view queue status."""
-        if ctx.text:
-            await ctx.client.chat_postMessage(
-                channel=ctx.channel_id,
-                thread_ts=ctx.thread_ts,
-                text="Invalid queue command",
-                blocks=error_message("Usage: /qv"),
-            )
-            return
-
+    async def _post_queue_status(ctx: CommandContext) -> None:
         pending = await deps.db.get_pending_queue_items(ctx.channel_id, ctx.thread_ts)
         running = await deps.db.get_running_queue_item(ctx.channel_id, ctx.thread_ts)
 
@@ -171,19 +160,7 @@ def register_queue_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
             blocks=queue_status(pending, running),
         )
 
-    @app.command("/qclear")
-    @slack_command()
-    async def handle_queue_clear(ctx: CommandContext, deps: HandlerDependencies = deps):
-        """Handle /qclear command - clear pending queue items."""
-        if ctx.text:
-            await ctx.client.chat_postMessage(
-                channel=ctx.channel_id,
-                thread_ts=ctx.thread_ts,
-                text="Invalid queue command",
-                blocks=error_message("Usage: /qclear"),
-            )
-            return
-
+    async def _clear_pending_queue(ctx: CommandContext) -> None:
         cleared = await deps.db.clear_queue(ctx.channel_id, ctx.thread_ts)
 
         await ctx.client.chat_postMessage(
@@ -201,31 +178,8 @@ def register_queue_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
             ],
         )
 
-    @app.command("/qr")
-    @slack_command()
-    async def handle_queue_remove(ctx: CommandContext, deps: HandlerDependencies = deps):
-        """Handle /qr command - remove next queue item or specific item by id."""
-        if ctx.text:
-            parts = ctx.text.split()
-            if len(parts) != 1:
-                await ctx.client.chat_postMessage(
-                    channel=ctx.channel_id,
-                    thread_ts=ctx.thread_ts,
-                    text="Invalid queue command",
-                    blocks=error_message("Usage: /qr [item_id]"),
-                )
-                return
-            try:
-                item_id = int(parts[0])
-            except ValueError:
-                await ctx.client.chat_postMessage(
-                    channel=ctx.channel_id,
-                    thread_ts=ctx.thread_ts,
-                    text="Invalid item ID",
-                    blocks=error_message("Invalid item ID. Usage: /qr [item_id]"),
-                )
-                return
-        else:
+    async def _remove_pending_queue_item(ctx: CommandContext, item_id: Optional[int]) -> None:
+        if item_id is None:
             pending = await deps.db.get_pending_queue_items(ctx.channel_id, ctx.thread_ts)
             if not pending:
                 await ctx.client.chat_postMessage(
@@ -263,6 +217,133 @@ def register_queue_commands(app: AsyncApp, deps: HandlerDependencies) -> None:
             blocks=error_message(f"Item #{item_id} not found or is already running/completed."),
         )
 
+    @app.command("/qc")
+    @slack_command(require_text=True, usage_hint="Usage: /qc <view|clear|remove [item_id]>")
+    async def handle_queue_command(ctx: CommandContext, deps: HandlerDependencies = deps):
+        """Handle /qc queue control subcommands."""
+        parts = ctx.text.split()
+        subcommand = parts[0].lower()
+        args = parts[1:]
+
+        if subcommand == "view":
+            if args:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Invalid queue command",
+                    blocks=error_message("Usage: /qc view"),
+                )
+                return
+
+            await _post_queue_status(ctx)
+            return
+
+        if subcommand == "clear":
+            if args:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Invalid queue command",
+                    blocks=error_message("Usage: /qc clear"),
+                )
+                return
+
+            await _clear_pending_queue(ctx)
+            return
+
+        if subcommand == "remove":
+            if len(args) > 1:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Invalid queue command",
+                    blocks=error_message("Usage: /qc remove [item_id]"),
+                )
+                return
+
+            if args:
+                try:
+                    item_id = int(args[0])
+                except ValueError:
+                    await ctx.client.chat_postMessage(
+                        channel=ctx.channel_id,
+                        thread_ts=ctx.thread_ts,
+                        text="Invalid item ID",
+                        blocks=error_message("Invalid item ID. Usage: /qc remove [item_id]"),
+                    )
+                    return
+            else:
+                item_id = None
+
+            await _remove_pending_queue_item(ctx, item_id)
+            return
+
+        await ctx.client.chat_postMessage(
+            channel=ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            text="Invalid queue command",
+            blocks=error_message("Usage: /qc <view|clear|remove [item_id]>"),
+        )
+
+    @app.command("/qv")
+    @slack_command()
+    async def handle_queue_view(ctx: CommandContext, deps: HandlerDependencies = deps):
+        """Handle /qv command - view queue status."""
+        if ctx.text:
+            await ctx.client.chat_postMessage(
+                channel=ctx.channel_id,
+                thread_ts=ctx.thread_ts,
+                text="Invalid queue command",
+                blocks=error_message("Usage: /qv"),
+            )
+            return
+
+        await _post_queue_status(ctx)
+
+    @app.command("/qclear")
+    @slack_command()
+    async def handle_queue_clear(ctx: CommandContext, deps: HandlerDependencies = deps):
+        """Handle /qclear command - clear pending queue items."""
+        if ctx.text:
+            await ctx.client.chat_postMessage(
+                channel=ctx.channel_id,
+                thread_ts=ctx.thread_ts,
+                text="Invalid queue command",
+                blocks=error_message("Usage: /qclear"),
+            )
+            return
+
+        await _clear_pending_queue(ctx)
+
+    @app.command("/qr")
+    @slack_command()
+    async def handle_queue_remove(ctx: CommandContext, deps: HandlerDependencies = deps):
+        """Handle /qr command - remove next queue item or specific item by id."""
+        if ctx.text:
+            parts = ctx.text.split()
+            if len(parts) != 1:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Invalid queue command",
+                    blocks=error_message("Usage: /qr [item_id]"),
+                )
+                return
+            try:
+                item_id = int(parts[0])
+            except ValueError:
+                await ctx.client.chat_postMessage(
+                    channel=ctx.channel_id,
+                    thread_ts=ctx.thread_ts,
+                    text="Invalid item ID",
+                    blocks=error_message("Invalid item ID. Usage: /qr [item_id]"),
+                )
+                return
+        else:
+            item_id = None
+
+        await _remove_pending_queue_item(ctx, item_id)
+
 
 async def _process_queue(
     channel_id: str,
@@ -296,6 +377,7 @@ async def _process_queue(
             await deps.db.update_queue_item_status(item.id, "running")
 
             message_ts = None
+            streaming_state = None
             try:
                 response = await client.chat_postMessage(
                     channel=channel_id,
@@ -305,6 +387,17 @@ async def _process_queue(
                 )
                 message_ts = response["ts"]
                 running_message_ts = message_ts
+                streaming_state = StreamingMessageState(
+                    channel_id=channel_id,
+                    message_ts=message_ts,
+                    prompt=item.prompt,
+                    client=client,
+                    logger=log,
+                    track_tools=True,
+                    smart_concat=True,
+                )
+                streaming_state.start_heartbeat()
+                on_chunk = create_streaming_callback(streaming_state)
 
                 session = await deps.db.get_or_create_session(
                     channel_id,
@@ -319,6 +412,7 @@ async def _process_queue(
                     channel_id=channel_id,
                     thread_ts=thread_ts,
                     execution_id=f"queue_{item.id}",
+                    on_chunk=on_chunk,
                     slack_client=client,
                     logger=log,
                 )
@@ -360,6 +454,9 @@ async def _process_queue(
                         text=f"Queue item #{item.id} failed",
                         blocks=error_message(f"Queue item failed: {e}"),
                     )
+            finally:
+                if streaming_state:
+                    await streaming_state.stop_heartbeat()
 
             running_item = None
             running_message_ts = None

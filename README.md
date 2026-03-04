@@ -160,6 +160,9 @@ Queue commands for sequential execution while preserving Claude's session contex
 | Command | Description | Example |
 |---------|-------------|---------|
 | `/q` | Add command to queue | `/q analyze the API endpoints` |
+| `/qc view` | View queue status (legacy control command) | `/qc view` |
+| `/qc clear` | Clear pending queue (legacy control command) | `/qc clear` |
+| `/qc remove [id]` | Remove next or specific pending item (legacy control command) | `/qc remove` |
 | `/qv` | View queue status | `/qv` |
 | `/qclear` | Clear pending queue | `/qclear` |
 | `/qr` | Remove the next pending item | `/qr` |

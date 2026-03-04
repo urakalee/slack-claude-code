@@ -95,6 +95,44 @@ async def test_process_queue_completes_item_and_updates_message():
 
 
 @pytest.mark.asyncio
+async def test_process_queue_streams_updates_during_execution():
+    """Queue item execution should stream intermediate output updates."""
+    item = SimpleNamespace(id=70, prompt="run tests")
+    session = SimpleNamespace(id=1)
+    route_result = SimpleNamespace(
+        result=SimpleNamespace(success=True, output="done", error=None),
+    )
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(side_effect=[[item], []]),
+            update_queue_item_status=AsyncMock(),
+            get_or_create_session=AsyncMock(return_value=session),
+        ),
+        codex_executor=None,
+    )
+    client = SimpleNamespace(
+        chat_postMessage=AsyncMock(return_value={"ts": "123.456"}),
+        chat_update=AsyncMock(),
+    )
+
+    async def fake_execute_for_session(**kwargs):
+        await kwargs["on_chunk"](
+            SimpleNamespace(type="assistant", content="partial output", tool_activities=[])
+        )
+        return route_result
+
+    with patch(
+        "src.handlers.claude.queue.execute_for_session",
+        new=AsyncMock(side_effect=fake_execute_for_session),
+    ) as mock_execute:
+        with patch("src.handlers.claude.queue.asyncio.sleep", new=AsyncMock()):
+            await _process_queue("C123", deps, client, MagicMock())
+
+    assert mock_execute.await_args.kwargs["on_chunk"] is not None
+    assert client.chat_update.await_count >= 2
+
+
+@pytest.mark.asyncio
 async def test_process_queue_waits_for_active_codex_turn():
     """Queue processor should wait while active Codex turn is in progress for the same scope."""
     item = SimpleNamespace(id=8, prompt="follow up")
@@ -193,17 +231,17 @@ async def test_process_queue_cancelled_marks_running_item_cancelled():
 
 @pytest.mark.asyncio
 async def test_register_queue_commands_exposes_current_queue_commands():
-    """Queue command registration should expose /q, /qv, /qclear, and /qr."""
+    """Queue command registration should expose /q, /qc, /qv, /qclear, and /qr."""
     app = _FakeApp()
     deps = SimpleNamespace(db=SimpleNamespace())
 
     register_queue_commands(app, deps)
 
     assert "/q" in app.handlers
+    assert "/qc" in app.handlers
     assert "/qv" in app.handlers
     assert "/qclear" in app.handlers
     assert "/qr" in app.handlers
-    assert "/qc" not in app.handlers
 
 
 @pytest.mark.asyncio
@@ -227,6 +265,38 @@ async def test_qv_posts_queue_status():
             "user_id": "U123",
             "text": "",
             "command": "/qv",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    deps.db.get_pending_queue_items.assert_awaited_once_with("C123", None)
+    deps.db.get_running_queue_item.assert_awaited_once_with("C123", None)
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["text"] == "Queue status"
+
+
+@pytest.mark.asyncio
+async def test_qc_view_subcommand_posts_queue_status():
+    """`/qc view` should render queue state."""
+    app = _FakeApp()
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(return_value=[]),
+            get_running_queue_item=AsyncMock(return_value=None),
+        )
+    )
+    register_queue_commands(app, deps)
+
+    handler = app.handlers["/qc"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "view",
+            "command": "/qc",
         },
         client=client,
         logger=MagicMock(),
@@ -267,6 +337,37 @@ async def test_qr_without_id_removes_next_pending_item():
     deps.db.remove_queue_item.assert_awaited_once_with(11, "C123", None)
     kwargs = client.chat_postMessage.await_args.kwargs
     assert kwargs["text"] == "Removed item #11 from queue"
+
+
+@pytest.mark.asyncio
+async def test_qc_remove_without_id_removes_next_pending_item():
+    """`/qc remove` should remove the next pending queue item."""
+    app = _FakeApp()
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(return_value=[SimpleNamespace(id=12)]),
+            remove_queue_item=AsyncMock(return_value=True),
+        )
+    )
+    register_queue_commands(app, deps)
+
+    handler = app.handlers["/qc"]
+    client = SimpleNamespace(chat_postMessage=AsyncMock())
+    await handler(
+        ack=AsyncMock(),
+        command={
+            "channel_id": "C123",
+            "user_id": "U123",
+            "text": "remove",
+            "command": "/qc",
+        },
+        client=client,
+        logger=MagicMock(),
+    )
+
+    deps.db.remove_queue_item.assert_awaited_once_with(12, "C123", None)
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["text"] == "Removed item #12 from queue"
 
 
 @pytest.mark.asyncio
