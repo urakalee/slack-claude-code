@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.database.models import Session
-from src.handlers.claude.mode import register_mode_command
+from src.handlers.claude.mode import _get_codex_display_mode, register_mode_command
 
 
 class _FakeApp:
@@ -89,3 +89,17 @@ async def test_codex_compat_mode_updates_mode_and_approval_only():
     deps.db.update_session_approval_mode.assert_awaited_once_with("C123", None, "never")
     deps.db.update_session_sandbox_mode.assert_not_awaited()
     deps.db.update_session_model.assert_not_awaited()
+
+
+def test_codex_display_mode_prefers_default_alias_for_on_request():
+    assert (
+        _get_codex_display_mode(permission_mode="default", approval_mode="on-request")
+        == "default"
+    )
+
+
+def test_codex_display_mode_remains_bypass_for_never():
+    assert (
+        _get_codex_display_mode(permission_mode="default", approval_mode="never")
+        == "bypass"
+    )

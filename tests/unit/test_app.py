@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.app import (
+    _event_dedupe_key,
+    _is_duplicate_event,
+    _strip_leading_slack_mention,
     _route_codex_message_to_active_turn_or_queue,
     configure_logging,
     slack_api_with_retry,
@@ -58,6 +61,39 @@ class TestConfigureLogging:
         assert expected_log_path.parent.exists()
 
 
+class TestEventHelpers:
+    """Tests for Slack message normalization and dedupe helpers."""
+
+    def test_strip_leading_slack_mention(self):
+        """Leading bot mention should be stripped while preserving prompt text."""
+        assert _strip_leading_slack_mention("<@U123> run tests") == "run tests"
+        assert _strip_leading_slack_mention("  <@U123>   run tests  ") == "run tests"
+        assert _strip_leading_slack_mention("run tests") == "run tests"
+
+    def test_event_dedupe_key_uses_channel_ts_and_user(self):
+        """Dedupe key should be stable across message/app_mention payloads."""
+        event = {"channel": "C123", "ts": "111.222", "user": "U999"}
+        assert _event_dedupe_key(event) == "C123:111.222:U999"
+
+    def test_duplicate_event_detection_with_ttl(self):
+        """Duplicate events inside TTL should be ignored; later events should pass."""
+        seen: dict[str, float] = {}
+        event = {"channel": "C123", "ts": "111.222", "user": "U999"}
+
+        assert (
+            _is_duplicate_event(event, seen, now_monotonic=100.0, ttl_seconds=30.0)
+            is False
+        )
+        assert (
+            _is_duplicate_event(event, seen, now_monotonic=105.0, ttl_seconds=30.0)
+            is True
+        )
+        assert (
+            _is_duplicate_event(event, seen, now_monotonic=131.0, ttl_seconds=30.0)
+            is False
+        )
+
+
 class TestCodexActiveTurnRouting:
     """Tests for active-turn steer and queue fallback behavior."""
 
@@ -69,7 +105,9 @@ class TestCodexActiveTurnRouting:
             codex_executor=SimpleNamespace(
                 has_active_turn=AsyncMock(return_value=True),
                 steer_active_turn=AsyncMock(
-                    return_value=SimpleNamespace(success=True, turn_id="turn-123", error=None)
+                    return_value=SimpleNamespace(
+                        success=True, turn_id="turn-123", error=None
+                    )
                 ),
                 record_queue_fallback=AsyncMock(),
             ),
@@ -107,7 +145,9 @@ class TestCodexActiveTurnRouting:
             codex_executor=SimpleNamespace(
                 has_active_turn=AsyncMock(return_value=True),
                 steer_active_turn=AsyncMock(
-                    return_value=SimpleNamespace(success=False, turn_id=None, error="conflict")
+                    return_value=SimpleNamespace(
+                        success=False, turn_id=None, error="conflict"
+                    )
                 ),
                 record_queue_fallback=AsyncMock(),
             ),
@@ -119,7 +159,9 @@ class TestCodexActiveTurnRouting:
         )
         client = SimpleNamespace(chat_postMessage=AsyncMock())
 
-        with patch("src.app.ensure_queue_processor", new=AsyncMock()) as mock_ensure_queue:
+        with patch(
+            "src.app.ensure_queue_processor", new=AsyncMock()
+        ) as mock_ensure_queue:
             handled = await _route_codex_message_to_active_turn_or_queue(
                 client=client,
                 deps=deps,
@@ -148,7 +190,9 @@ class TestCodexActiveTurnRouting:
             codex_executor=SimpleNamespace(
                 has_active_turn=AsyncMock(return_value=True),
                 steer_active_turn=AsyncMock(
-                    return_value=SimpleNamespace(success=False, turn_id=None, error="busy")
+                    return_value=SimpleNamespace(
+                        success=False, turn_id=None, error="busy"
+                    )
                 ),
                 record_queue_fallback=AsyncMock(),
             ),
@@ -177,5 +221,7 @@ class TestCodexActiveTurnRouting:
             output="Steer failed and queue fallback failed. steer_error=busy queue_error=db insert failed",
             error_message="db insert failed",
         )
-        deps.codex_executor.record_queue_fallback.assert_awaited_once_with(success=False)
+        deps.codex_executor.record_queue_fallback.assert_awaited_once_with(
+            success=False
+        )
         assert client.chat_postMessage.await_count >= 1

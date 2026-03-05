@@ -53,7 +53,9 @@ def register_mode_command(app: AsyncApp, deps: HandlerDependencies) -> None:
 
         # Get session
         session = await deps.db.get_or_create_session(
-            ctx.channel_id, thread_ts=ctx.thread_ts, default_cwd=config.DEFAULT_WORKING_DIR
+            ctx.channel_id,
+            thread_ts=ctx.thread_ts,
+            default_cwd=config.DEFAULT_WORKING_DIR,
         )
         backend = session.get_backend()
 
@@ -67,7 +69,8 @@ def register_mode_command(app: AsyncApp, deps: HandlerDependencies) -> None:
             display_mode = CLAUDE_MODE_DISPLAY.get(current_mode, current_mode)
 
             mode_list = "\n".join(
-                f"• `{alias}` - {_get_mode_description(alias)}" for alias in CLAUDE_MODE_ALIASES
+                f"• `{alias}` - {_get_mode_description(alias)}"
+                for alias in CLAUDE_MODE_ALIASES
             )
 
             await ctx.client.chat_postMessage(
@@ -172,7 +175,9 @@ async def _handle_codex_mode(
             return
 
         normalized_value = normalize_codex_approval_mode(value)
-        await deps.db.update_session_approval_mode(ctx.channel_id, ctx.thread_ts, normalized_value)
+        await deps.db.update_session_approval_mode(
+            ctx.channel_id, ctx.thread_ts, normalized_value
+        )
         await ctx.client.chat_postMessage(
             channel=ctx.channel_id,
             text=f"Codex approval mode set to: {normalized_value}",
@@ -318,11 +323,19 @@ def _map_codex_alias_to_permission_mode(alias: str) -> str:
     return "default"
 
 
-def _get_codex_display_mode(permission_mode: str | None, approval_mode: str | None) -> str:
+def _get_codex_display_mode(
+    permission_mode: str | None, approval_mode: str | None
+) -> str:
     """Get Codex mode alias for display."""
     if (permission_mode or "").strip().lower() == "plan":
         return "plan"
-    return codex_mode_alias_for_approval(approval_mode)
+    alias = codex_mode_alias_for_approval(approval_mode)
+    # `ask` and `default` are equivalent for Codex approval mode `on-request`.
+    # Prefer `default` as the canonical display to avoid implying the user
+    # explicitly selected `ask`.
+    if alias == "ask":
+        return "default"
+    return alias
 
 
 def _get_codex_mode_description(mode: str) -> str:
