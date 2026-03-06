@@ -179,18 +179,15 @@ Queue scope follows session scope:
 
 | Marker | Meaning |
 |--------|---------|
-| `***` or `###` | Prompt separator (split into multiple queue items) |
+| `***` | Prompt separator (split into multiple queue items) |
 | `***branch-<name>***` ... `***branch-<name>-end***` | Run enclosed prompts in worktree for branch `<name>` (`-end` optional at EOF) |
 | `***loop-<n>***` ... `***loop-<n>-end***` | Repeat enclosed prompts `n` times (`n >= 1`, `-end` optional at EOF) |
-| `###branch-<name>` ... `###branch-<name>-end` | Alternate branch marker form (`###...###` also supported) |
-| `###loop-<n>` ... `###loop-<n>-end` | Alternate loop marker form (`###...###` also supported) |
 
 Rules:
 - Markers must appear on their own line.
 - Blocks can be nested (`loop` inside `branch`, `branch` inside `loop`, etc.).
 - If a block reaches end-of-input, its `*-end` marker can be omitted.
 - For branches, repeating a matching marker also closes it (for example: open with `***branch-f1***`, close later with `***branch-f1***`).
-- `***...***` and `###...` marker forms can be mixed in the same queue plan.
 - Use `*-end` markers when you need to close a block before the end of the plan.
 - Branch blocks require your current session directory to be a git repo.
 - Missing branch worktrees are auto-created for that branch when needed.

@@ -13,10 +13,6 @@ _BRANCH_START_RE = re.compile(r"^\*\*\*branch-(.+)\*\*\*$")
 _BRANCH_END_RE = re.compile(r"^\*\*\*branch-(.+)-end\*\*\*$")
 _LOOP_START_RE = re.compile(r"^\*\*\*loop-(-?\d+)\*\*\*$")
 _LOOP_END_RE = re.compile(r"^\*\*\*loop-(-?\d+)-end\*\*\*$")
-_HASH_BRANCH_START_BODY_RE = re.compile(r"^branch-(.+)$")
-_HASH_BRANCH_END_BODY_RE = re.compile(r"^branch-(.+)-end$")
-_HASH_LOOP_START_BODY_RE = re.compile(r"^loop-(-?\d+)$")
-_HASH_LOOP_END_BODY_RE = re.compile(r"^loop-(-?\d+)-end$")
 
 
 class QueuePlanError(ValueError):
@@ -314,12 +310,8 @@ def _flush_prompt(frame: _Frame) -> None:
 
 
 def _parse_marker(line: str, strict: bool) -> tuple[str, str | int] | tuple[str] | None:
-    if line in {"***", "###"}:
+    if line == "***":
         return ("separator",)
-
-    hash_marker = _parse_hash_marker(line, strict=strict)
-    if hash_marker is not None:
-        return hash_marker
 
     loop_end = _LOOP_END_RE.match(line)
     if loop_end:
@@ -339,37 +331,6 @@ def _parse_marker(line: str, strict: bool) -> tuple[str, str | int] | tuple[str]
 
     if strict and _ANY_MARKER_RE.match(line):
         raise QueuePlanError(f"Unknown queue-plan marker: `{line}`")
-    return None
-
-
-def _parse_hash_marker(line: str, strict: bool) -> tuple[str, str | int] | tuple[str] | None:
-    if not line.startswith("###"):
-        return None
-
-    body = line[3:]
-    if body.endswith("###"):
-        body = body[:-3]
-    body = body.strip()
-
-    loop_end = _HASH_LOOP_END_BODY_RE.match(body)
-    if loop_end:
-        return _parse_loop_marker_value(loop_end.group(1), line, marker_type="loop_end")
-
-    loop_start = _HASH_LOOP_START_BODY_RE.match(body)
-    if loop_start:
-        return _parse_loop_marker_value(loop_start.group(1), line, marker_type="loop_start")
-
-    branch_end = _HASH_BRANCH_END_BODY_RE.match(body)
-    if branch_end:
-        return _parse_branch_marker_value(branch_end.group(1), marker_type="branch_end")
-
-    branch_start = _HASH_BRANCH_START_BODY_RE.match(body)
-    if branch_start:
-        return _parse_branch_marker_value(branch_start.group(1), marker_type="branch_start")
-
-    if strict and body.startswith(("loop-", "branch-")):
-        raise QueuePlanError(f"Unknown queue-plan marker: `{line}`")
-
     return None
 
 
