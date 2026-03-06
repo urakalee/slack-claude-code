@@ -28,6 +28,11 @@ def test_contains_queue_plan_markers_ignores_plain_text() -> None:
     assert contains_queue_plan_markers("normal prompt\n***bold***\ncontinue") is False
 
 
+def test_contains_queue_plan_markers_treats_invalid_markers_as_structured() -> None:
+    assert contains_queue_plan_markers("***loop-0***") is True
+    assert contains_queue_plan_markers("###loop-0") is True
+
+
 def test_parse_queue_plan_separator_expands_prompts() -> None:
     prompts = parse_queue_plan_text("first task\n***\nsecond task")
     assert [item.prompt for item in prompts] == ["first task", "second task"]
@@ -129,12 +134,7 @@ def test_parse_queue_plan_rejects_mismatched_block_end() -> None:
 
 def test_parse_queue_plan_reports_open_branch_when_loop_end_hits_branch_scope() -> None:
     with pytest.raises(QueuePlanError, match="currently inside branch `f2`"):
-        parse_queue_plan_text(
-            "***loop-2***\n"
-            "***branch-f2***\n"
-            "run\n"
-            "***loop-2-end***"
-        )
+        parse_queue_plan_text("***loop-2***\n" "***branch-f2***\n" "run\n" "***loop-2-end***")
 
 
 def test_parse_queue_plan_rejects_non_positive_loop_count() -> None:

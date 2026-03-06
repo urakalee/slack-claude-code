@@ -1,7 +1,7 @@
 """Structured queue-plan parser for prompt/worktree/loop DSL."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from src.git.service import GitError, GitService
@@ -65,20 +65,19 @@ class _Frame:
     start_line: int
     branch_name: Optional[str] = None
     loop_count: Optional[int] = None
-    nodes: list[_Node] = None
-    prompt_lines: list[str] = None
-
-    def __post_init__(self) -> None:
-        if self.nodes is None:
-            self.nodes = []
-        if self.prompt_lines is None:
-            self.prompt_lines = []
+    nodes: list[_Node] = field(default_factory=list)
+    prompt_lines: list[str] = field(default_factory=list)
 
 
 def contains_queue_plan_markers(text: str) -> bool:
     """Return True when text includes at least one line-level queue-plan marker."""
     for line in text.splitlines():
-        marker = _parse_marker(line.strip(), strict=False)
+        try:
+            marker = _parse_marker(line.strip(), strict=False)
+        except QueuePlanError:
+            # Invalid markers should still route through structured-plan handling
+            # so users get a clear validation error from the parser.
+            return True
         if marker is not None:
             return True
     return False
@@ -324,44 +323,26 @@ def _parse_marker(line: str, strict: bool) -> tuple[str, str | int] | tuple[str]
 
     loop_end = _LOOP_END_RE.match(line)
     if loop_end:
-        count = int(loop_end.group(1))
-        if count < 1:
-            raise QueuePlanError(
-                f"Invalid loop count `{count}` in marker `{line}`. Loop counts must be >= 1."
-            )
-        return ("loop_end", count)
+        return _parse_loop_marker_value(loop_end.group(1), line, marker_type="loop_end")
 
     loop_start = _LOOP_START_RE.match(line)
     if loop_start:
-        count = int(loop_start.group(1))
-        if count < 1:
-            raise QueuePlanError(
-                f"Invalid loop count `{count}` in marker `{line}`. Loop counts must be >= 1."
-            )
-        return ("loop_start", count)
+        return _parse_loop_marker_value(loop_start.group(1), line, marker_type="loop_start")
 
     branch_end = _BRANCH_END_RE.match(line)
     if branch_end:
-        branch_name = branch_end.group(1).strip()
-        if not branch_name:
-            raise QueuePlanError("Branch end marker must include a branch name.")
-        return ("branch_end", branch_name)
+        return _parse_branch_marker_value(branch_end.group(1), marker_type="branch_end")
 
     branch_start = _BRANCH_START_RE.match(line)
     if branch_start:
-        branch_name = branch_start.group(1).strip()
-        if not branch_name:
-            raise QueuePlanError("Branch marker must include a branch name.")
-        return ("branch_start", branch_name)
+        return _parse_branch_marker_value(branch_start.group(1), marker_type="branch_start")
 
     if strict and _ANY_MARKER_RE.match(line):
         raise QueuePlanError(f"Unknown queue-plan marker: `{line}`")
     return None
 
 
-def _parse_hash_marker(
-    line: str, strict: bool
-) -> tuple[str, str | int] | tuple[str] | None:
+def _parse_hash_marker(line: str, strict: bool) -> tuple[str, str | int] | tuple[str] | None:
     if not line.startswith("###"):
         return None
 
@@ -372,37 +353,41 @@ def _parse_hash_marker(
 
     loop_end = _HASH_LOOP_END_BODY_RE.match(body)
     if loop_end:
-        count = int(loop_end.group(1))
-        if count < 1:
-            raise QueuePlanError(
-                f"Invalid loop count `{count}` in marker `{line}`. Loop counts must be >= 1."
-            )
-        return ("loop_end", count)
+        return _parse_loop_marker_value(loop_end.group(1), line, marker_type="loop_end")
 
     loop_start = _HASH_LOOP_START_BODY_RE.match(body)
     if loop_start:
-        count = int(loop_start.group(1))
-        if count < 1:
-            raise QueuePlanError(
-                f"Invalid loop count `{count}` in marker `{line}`. Loop counts must be >= 1."
-            )
-        return ("loop_start", count)
+        return _parse_loop_marker_value(loop_start.group(1), line, marker_type="loop_start")
 
     branch_end = _HASH_BRANCH_END_BODY_RE.match(body)
     if branch_end:
-        branch_name = branch_end.group(1).strip()
-        if not branch_name:
-            raise QueuePlanError("Branch end marker must include a branch name.")
-        return ("branch_end", branch_name)
+        return _parse_branch_marker_value(branch_end.group(1), marker_type="branch_end")
 
     branch_start = _HASH_BRANCH_START_BODY_RE.match(body)
     if branch_start:
-        branch_name = branch_start.group(1).strip()
-        if not branch_name:
-            raise QueuePlanError("Branch marker must include a branch name.")
-        return ("branch_start", branch_name)
+        return _parse_branch_marker_value(branch_start.group(1), marker_type="branch_start")
 
     if strict and body.startswith(("loop-", "branch-")):
         raise QueuePlanError(f"Unknown queue-plan marker: `{line}`")
 
     return None
+
+
+def _parse_loop_marker_value(count_text: str, line: str, marker_type: str) -> tuple[str, int]:
+    """Parse and validate loop marker payload."""
+    count = int(count_text)
+    if count < 1:
+        raise QueuePlanError(
+            f"Invalid loop count `{count}` in marker `{line}`. Loop counts must be >= 1."
+        )
+    return marker_type, count
+
+
+def _parse_branch_marker_value(branch_text: str, marker_type: str) -> tuple[str, str]:
+    """Parse and validate branch marker payload."""
+    branch_name = branch_text.strip()
+    if not branch_name:
+        if marker_type == "branch_end":
+            raise QueuePlanError("Branch end marker must include a branch name.")
+        raise QueuePlanError("Branch marker must include a branch name.")
+    return marker_type, branch_name

@@ -93,13 +93,9 @@ async def test_codex_compat_mode_updates_mode_and_approval_only():
 
 def test_codex_display_mode_prefers_default_alias_for_on_request():
     assert (
-        _get_codex_display_mode(permission_mode="default", approval_mode="on-request")
-        == "default"
+        _get_codex_display_mode(permission_mode="default", approval_mode="on-request") == "default"
     )
 
 
 def test_codex_display_mode_remains_bypass_for_never():
-    assert (
-        _get_codex_display_mode(permission_mode="default", approval_mode="never")
-        == "bypass"
-    )
+    assert _get_codex_display_mode(permission_mode="default", approval_mode="never") == "bypass"

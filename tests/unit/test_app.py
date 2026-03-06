@@ -11,8 +11,8 @@ from src.app import (
     _event_dedupe_key,
     _is_duplicate_event,
     _queue_structured_plan_message,
-    _strip_leading_slack_mention,
     _route_codex_message_to_active_turn_or_queue,
+    _strip_leading_slack_mention,
     configure_logging,
     slack_api_with_retry,
 )
@@ -35,6 +35,16 @@ class TestSlackApiRetry:
             await slack_api_with_retry(failing_call, max_retries=3, base_delay=0)
 
         assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_slack_api_with_retry_rejects_non_positive_retry_count(self):
+        """Retry helper should validate that at least one attempt is allowed."""
+
+        async def successful_call():
+            return "ok"
+
+        with pytest.raises(ValueError, match="at least 1"):
+            await slack_api_with_retry(successful_call, max_retries=0)
 
 
 class TestConfigureLogging:
@@ -230,6 +240,26 @@ class TestStructuredQueuePlanRouting:
 
         assert handled is False
         client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invalid_marker_is_reported_as_structured_plan_error(self):
+        session = SimpleNamespace(id=1, working_directory="/repo")
+        deps = SimpleNamespace(db=SimpleNamespace())
+        client = SimpleNamespace(chat_postMessage=AsyncMock())
+
+        handled = await _queue_structured_plan_message(
+            client=client,
+            deps=deps,
+            session=session,
+            channel_id="C123",
+            thread_ts=None,
+            prompt="***loop-0***",
+            logger=MagicMock(),
+        )
+
+        assert handled is True
+        kwargs = client.chat_postMessage.await_args.kwargs
+        assert "Invalid structured queue plan" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_queues_structured_plan_message_items(self):

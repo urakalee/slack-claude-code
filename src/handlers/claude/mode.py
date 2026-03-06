@@ -1,5 +1,7 @@
 """Mode command handler: /mode for Claude and Codex sessions."""
 
+from collections.abc import Awaitable, Callable, Sequence
+
 from slack_bolt.async_app import AsyncApp
 
 from src.codex.capabilities import (
@@ -69,8 +71,7 @@ def register_mode_command(app: AsyncApp, deps: HandlerDependencies) -> None:
             display_mode = CLAUDE_MODE_DISPLAY.get(current_mode, current_mode)
 
             mode_list = "\n".join(
-                f"• `{alias}` - {_get_mode_description(alias)}"
-                for alias in CLAUDE_MODE_ALIASES
+                f"• `{alias}` - {_get_mode_description(alias)}" for alias in CLAUDE_MODE_ALIASES
             )
 
             await ctx.client.chat_postMessage(
@@ -139,107 +140,29 @@ async def _handle_codex_mode(
     value = tokens[1].strip().lower() if len(tokens) > 1 else ""
 
     if primary == "approval":
-        if not value:
-            current_mode = normalize_codex_approval_mode(
-                session.approval_mode or config.CODEX_APPROVAL_MODE
-            )
-            valid_modes = ", ".join(f"`{mode}`" for mode in config.VALID_APPROVAL_MODES)
-            await ctx.client.chat_postMessage(
-                channel=ctx.channel_id,
-                text=f"Current approval mode: {current_mode}",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                f"*Current Codex approval mode:* `{current_mode}`\n\n"
-                                f"*Valid modes:* {valid_modes}\n\n"
-                                "Use `/mode approval <mode>` to update."
-                            ),
-                        },
-                    }
-                ],
-            )
-            return
-
-        if value not in config.VALID_APPROVAL_MODES:
-            await ctx.client.chat_postMessage(
-                channel=ctx.channel_id,
-                text=f"Invalid approval mode: {value}",
-                blocks=error_message(
-                    f"Invalid approval mode: `{value}`\n\n"
-                    f"Valid modes: {', '.join(f'`{m}`' for m in config.VALID_APPROVAL_MODES)}"
-                ),
-            )
-            return
-
-        normalized_value = normalize_codex_approval_mode(value)
-        await deps.db.update_session_approval_mode(
-            ctx.channel_id, ctx.thread_ts, normalized_value
+        current_mode = normalize_codex_approval_mode(
+            session.approval_mode or config.CODEX_APPROVAL_MODE
         )
-        await ctx.client.chat_postMessage(
-            channel=ctx.channel_id,
-            text=f"Codex approval mode set to: {normalized_value}",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f":heavy_check_mark: Codex approval mode set to `{normalized_value}`",
-                    },
-                }
-            ],
+        await _handle_codex_direct_mode(
+            ctx=ctx,
+            value=value,
+            mode_name="approval",
+            current_mode=current_mode,
+            valid_modes=config.VALID_APPROVAL_MODES,
+            update_mode=deps.db.update_session_approval_mode,
+            normalize_mode=normalize_codex_approval_mode,
         )
         return
 
     if primary == "sandbox":
-        if not value:
-            current_mode = session.sandbox_mode or config.CODEX_SANDBOX_MODE
-            valid_modes = ", ".join(f"`{mode}`" for mode in config.VALID_SANDBOX_MODES)
-            await ctx.client.chat_postMessage(
-                channel=ctx.channel_id,
-                text=f"Current sandbox mode: {current_mode}",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                f"*Current Codex sandbox mode:* `{current_mode}`\n\n"
-                                f"*Valid modes:* {valid_modes}\n\n"
-                                "Use `/mode sandbox <mode>` to update."
-                            ),
-                        },
-                    }
-                ],
-            )
-            return
-
-        if value not in config.VALID_SANDBOX_MODES:
-            await ctx.client.chat_postMessage(
-                channel=ctx.channel_id,
-                text=f"Invalid sandbox mode: {value}",
-                blocks=error_message(
-                    f"Invalid sandbox mode: `{value}`\n\n"
-                    f"Valid modes: {', '.join(f'`{m}`' for m in config.VALID_SANDBOX_MODES)}"
-                ),
-            )
-            return
-
-        await deps.db.update_session_sandbox_mode(ctx.channel_id, ctx.thread_ts, value)
-        await ctx.client.chat_postMessage(
-            channel=ctx.channel_id,
-            text=f"Codex sandbox mode set to: {value}",
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f":heavy_check_mark: Codex sandbox mode set to `{value}`",
-                    },
-                }
-            ],
+        current_mode = session.sandbox_mode or config.CODEX_SANDBOX_MODE
+        await _handle_codex_direct_mode(
+            ctx=ctx,
+            value=value,
+            mode_name="sandbox",
+            current_mode=current_mode,
+            valid_modes=config.VALID_SANDBOX_MODES,
+            update_mode=deps.db.update_session_sandbox_mode,
         )
         return
 
@@ -314,6 +237,64 @@ async def _handle_codex_mode(
     )
 
 
+async def _handle_codex_direct_mode(
+    ctx: CommandContext,
+    value: str,
+    mode_name: str,
+    current_mode: str,
+    valid_modes: Sequence[str],
+    update_mode: Callable[[str, str | None, str], Awaitable[None]],
+    normalize_mode: Callable[[str | None], str] | None = None,
+) -> None:
+    """Handle direct Codex mode controls (`approval` and `sandbox`)."""
+    valid_modes_text = ", ".join(f"`{mode}`" for mode in valid_modes)
+    if not value:
+        await ctx.client.chat_postMessage(
+            channel=ctx.channel_id,
+            text=f"Current {mode_name} mode: {current_mode}",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"*Current Codex {mode_name} mode:* `{current_mode}`\n\n"
+                            f"*Valid modes:* {valid_modes_text}\n\n"
+                            f"Use `/mode {mode_name} <mode>` to update."
+                        ),
+                    },
+                }
+            ],
+        )
+        return
+
+    if value not in valid_modes:
+        await ctx.client.chat_postMessage(
+            channel=ctx.channel_id,
+            text=f"Invalid {mode_name} mode: {value}",
+            blocks=error_message(
+                f"Invalid {mode_name} mode: `{value}`\n\n" f"Valid modes: {valid_modes_text}"
+            ),
+        )
+        return
+
+    stored_mode = normalize_mode(value) if normalize_mode else value
+    await update_mode(ctx.channel_id, ctx.thread_ts, stored_mode)
+    await ctx.client.chat_postMessage(
+        channel=ctx.channel_id,
+        text=f"Codex {mode_name} mode set to: {stored_mode}",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":heavy_check_mark: Codex {mode_name} mode set to `{stored_mode}`",
+                },
+            }
+        ],
+    )
+
+
 def _map_codex_alias_to_permission_mode(alias: str) -> str:
     """Map Codex `/mode` alias to stored permission mode."""
     if alias == "bypass":
@@ -323,9 +304,7 @@ def _map_codex_alias_to_permission_mode(alias: str) -> str:
     return "default"
 
 
-def _get_codex_display_mode(
-    permission_mode: str | None, approval_mode: str | None
-) -> str:
+def _get_codex_display_mode(permission_mode: str | None, approval_mode: str | None) -> str:
     """Get Codex mode alias for display."""
     if (permission_mode or "").strip().lower() == "plan":
         return "plan"

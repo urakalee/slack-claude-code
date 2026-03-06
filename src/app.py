@@ -94,6 +94,9 @@ async def slack_api_with_retry(
     Raises:
         The last exception if all retries fail
     """
+    if max_retries < 1:
+        raise ValueError("max_retries must be at least 1")
+
     last_error = None
     for attempt in range(max_retries):
         try:

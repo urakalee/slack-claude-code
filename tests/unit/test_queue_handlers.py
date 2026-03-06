@@ -130,9 +130,7 @@ async def test_process_queue_completes_item_and_updates_message():
     assert deps.db.update_queue_item_status.await_args_list[0].args == (7, "running")
     assert deps.db.update_queue_item_status.await_args_list[1].args == (7, "completed")
     assert deps.db.update_queue_item_status.await_args_list[1].kwargs["output"] == "done"
-    assert (
-        client.chat_postMessage.await_args.kwargs["text"] == "Processing queue item 1: run tests"
-    )
+    assert client.chat_postMessage.await_args.kwargs["text"] == "Processing queue item 1: run tests"
     client.chat_update.assert_awaited_once()
 
 
