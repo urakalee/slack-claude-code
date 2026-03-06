@@ -308,7 +308,7 @@ class TestStructuredQueuePlanRouting:
                         SimpleNamespace(id=2, position=2),
                     ]
                 ),
-                get_running_queue_item=AsyncMock(return_value=None),
+                get_running_queue_items=AsyncMock(return_value=[]),
             )
         )
         client = SimpleNamespace(chat_postMessage=AsyncMock())
@@ -318,10 +318,17 @@ class TestStructuredQueuePlanRouting:
                 "src.app.materialize_queue_plan_text",
                 new=AsyncMock(
                     return_value=[
-                        SimpleNamespace(prompt="first", working_directory_override=None),
+                        SimpleNamespace(
+                            prompt="first",
+                            working_directory_override=None,
+                            parallel_group_id=None,
+                            parallel_limit=None,
+                        ),
                         SimpleNamespace(
                             prompt="second",
                             working_directory_override="/repo-worktrees/feature-x",
+                            parallel_group_id=None,
+                            parallel_limit=None,
                         ),
                     ]
                 ),
@@ -342,7 +349,10 @@ class TestStructuredQueuePlanRouting:
             session_id=1,
             channel_id="C123",
             thread_ts="123.456",
-            queue_entries=[("first", None), ("second", "/repo-worktrees/feature-x")],
+            queue_entries=[
+                ("first", None, None, None),
+                ("second", "/repo-worktrees/feature-x", None, None),
+            ],
         )
         mock_ensure.assert_awaited_once()
         assert (

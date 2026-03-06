@@ -36,6 +36,8 @@ def _queue_item(item_id: int, prompt: str, working_directory_override: str | Non
         id=item_id,
         prompt=prompt,
         working_directory_override=working_directory_override,
+        parallel_group_id=None,
+        parallel_limit=None,
     )
 
 
@@ -399,7 +401,7 @@ async def test_qv_posts_queue_status():
     deps = SimpleNamespace(
         db=SimpleNamespace(
             get_pending_queue_items=AsyncMock(return_value=[]),
-            get_running_queue_item=AsyncMock(return_value=None),
+            get_running_queue_items=AsyncMock(return_value=[]),
         )
     )
     register_queue_commands(app, deps)
@@ -419,7 +421,7 @@ async def test_qv_posts_queue_status():
     )
 
     deps.db.get_pending_queue_items.assert_awaited_once_with("C123", None)
-    deps.db.get_running_queue_item.assert_awaited_once_with("C123", None)
+    deps.db.get_running_queue_items.assert_awaited_once_with("C123", None)
     kwargs = client.chat_postMessage.await_args.kwargs
     assert kwargs["text"] == "Queue status"
 
@@ -431,7 +433,7 @@ async def test_qc_view_subcommand_posts_queue_status():
     deps = SimpleNamespace(
         db=SimpleNamespace(
             get_pending_queue_items=AsyncMock(return_value=[]),
-            get_running_queue_item=AsyncMock(return_value=None),
+            get_running_queue_items=AsyncMock(return_value=[]),
         )
     )
     register_queue_commands(app, deps)
@@ -451,7 +453,7 @@ async def test_qc_view_subcommand_posts_queue_status():
     )
 
     deps.db.get_pending_queue_items.assert_awaited_once_with("C123", None)
-    deps.db.get_running_queue_item.assert_awaited_once_with("C123", None)
+    deps.db.get_running_queue_items.assert_awaited_once_with("C123", None)
     kwargs = client.chat_postMessage.await_args.kwargs
     assert kwargs["text"] == "Queue status"
 
@@ -562,7 +564,7 @@ async def test_q_parses_structured_plan_and_queues_all_items():
                     SimpleNamespace(id=3, position=3),
                 ]
             ),
-            get_running_queue_item=AsyncMock(return_value=None),
+            get_running_queue_items=AsyncMock(return_value=[]),
         )
     )
     register_queue_commands(app, deps)
@@ -574,11 +576,24 @@ async def test_q_parses_structured_plan_and_queues_all_items():
             "src.handlers.claude.queue.materialize_queue_plan_text",
             new=AsyncMock(
                 return_value=[
-                    SimpleNamespace(prompt="first", working_directory_override=None),
                     SimpleNamespace(
-                        prompt="second", working_directory_override="/repo-worktrees/feature"
+                        prompt="first",
+                        working_directory_override=None,
+                        parallel_group_id=None,
+                        parallel_limit=None,
                     ),
-                    SimpleNamespace(prompt="third", working_directory_override=None),
+                    SimpleNamespace(
+                        prompt="second",
+                        working_directory_override="/repo-worktrees/feature",
+                        parallel_group_id=None,
+                        parallel_limit=None,
+                    ),
+                    SimpleNamespace(
+                        prompt="third",
+                        working_directory_override=None,
+                        parallel_group_id=None,
+                        parallel_limit=None,
+                    ),
                 ]
             ),
         ):
@@ -602,9 +617,9 @@ async def test_q_parses_structured_plan_and_queues_all_items():
         channel_id="C123",
         thread_ts=None,
         queue_entries=[
-            ("first", None),
-            ("second", "/repo-worktrees/feature"),
-            ("third", None),
+            ("first", None, None, None),
+            ("second", "/repo-worktrees/feature", None, None),
+            ("third", None, None, None),
         ],
     )
     assert "Added 3 item(s) to queue" in client.chat_postMessage.await_args.kwargs["text"]
@@ -670,3 +685,68 @@ async def test_process_queue_uses_worktree_override_and_non_persistent_session_i
     assert call_sessions[0].codex_session_id is None
     assert call_sessions[1].working_directory == "/repo-worktrees/feature-x"
     assert call_sessions[1].codex_session_id == "codex-worktree-session-1"
+
+
+@pytest.mark.asyncio
+async def test_process_queue_parallel_group_honors_width_and_uses_isolated_scopes():
+    """Parallel groups should respect width and use isolated execution scopes."""
+    item1 = _queue_item(301, "task one")
+    item1.parallel_group_id = "parallel-1"
+    item1.parallel_limit = 2
+    item2 = _queue_item(302, "task two")
+    item2.parallel_group_id = "parallel-1"
+    item2.parallel_limit = 2
+    item3 = _queue_item(303, "task three")
+    item3.parallel_group_id = "parallel-1"
+    item3.parallel_limit = 2
+    session = Session(
+        id=1,
+        working_directory="/repo",
+        model="opus",
+        claude_session_id="claude-main-session",
+    )
+    deps = SimpleNamespace(
+        db=SimpleNamespace(
+            get_pending_queue_items=AsyncMock(side_effect=[[item1, item2, item3], []]),
+            get_queue_group_items=AsyncMock(return_value=[item1, item2, item3]),
+            update_queue_item_status=AsyncMock(return_value=True),
+            get_or_create_session=AsyncMock(return_value=session),
+            get_command_history=AsyncMock(return_value=([], 0)),
+        ),
+        codex_executor=None,
+    )
+    client = SimpleNamespace(
+        chat_postMessage=AsyncMock(return_value={"ts": "123.456"}),
+        chat_update=AsyncMock(),
+    )
+
+    active = 0
+    max_active = 0
+    call_sessions: list[Session] = []
+
+    async def _fake_execute_for_session(**kwargs):
+        nonlocal active, max_active
+        call_sessions.append(kwargs["session"])
+        active += 1
+        max_active = max(max_active, active)
+        if active == 2:
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        active -= 1
+        return SimpleNamespace(
+            backend="claude",
+            result=SimpleNamespace(success=True, output="done", error=None, session_id=None),
+        )
+
+    with patch(
+        "src.handlers.claude.queue.execute_for_session",
+        new=AsyncMock(side_effect=_fake_execute_for_session),
+    ) as mock_execute:
+        await _process_queue("C123", deps, client, MagicMock())
+
+    assert max_active == 2
+    assert mock_execute.await_count == 3
+    for call in mock_execute.await_args_list:
+        assert call.kwargs["persist_session_ids"] is False
+        assert ":parallel:parallel-1:" in call.kwargs["session_scope_override"]
+    assert all(session_arg.claude_session_id is None for session_arg in call_sessions)

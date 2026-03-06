@@ -182,15 +182,19 @@ Queue scope follows session scope:
 | `***` | Prompt separator (split into multiple queue items) |
 | `***branch-<name>` ... `***branch-<name>-end` | Run enclosed prompts in worktree for branch `<name>` (`-end` optional at EOF) |
 | `***loop-<n>` ... `***loop-<n>-end` | Repeat enclosed prompts `n` times (`n >= 1`, `-end` optional at EOF) |
+| `***parallel` ... `***parallel-end` | Run all enclosed prompts concurrently as one barriered queue group |
+| `***parallel-<n>` ... `***parallel-end` | Keep up to `<n>` enclosed prompts running concurrently until the block is drained |
 
 Rules:
 - Markers must appear on their own line.
 - Blocks can be nested (`loop` inside `branch`, `branch` inside `loop`, etc.).
+- `parallel` can be nested with `loop` and `branch`, but nested `parallel` blocks are invalid.
 - If a block reaches end-of-input, its `*-end` marker can be omitted.
 - For branches, repeating a matching marker also closes it (for example: open with `***branch-f1`, close later with `***branch-f1`).
 - Use `*-end` markers when you need to close a block before the end of the plan.
 - Branch blocks require your current session directory to be a git repo.
 - Missing branch worktrees are auto-created for that branch when needed.
+- Parallel blocks are barriers: later queue items do not start until the parallel block fully finishes.
 - Expanded plans are capped at 500 queue items.
 
 Example:
@@ -206,17 +210,25 @@ Implement auth middleware updates
 Add/update auth tests and run them
 ***branch-feature/auth-end
 ***loop-2-end
+***parallel-2
+Summarize open PRs touching auth
+***
+Review auth-related production logs
+***
+***parallel-end
 Write release notes summary
 ```
 
-This expands to 7 queued items:
+This expands to 9 queued items:
 1. `Run test suite and summarize failures`
 2. `Implement auth middleware updates` (in `feature/auth` worktree)
 3. `Add/update auth tests and run them` (in `feature/auth` worktree)
 4. `Run test suite and summarize failures`
 5. `Implement auth middleware updates` (in `feature/auth` worktree)
 6. `Add/update auth tests and run them` (in `feature/auth` worktree)
-7. `Write release notes summary`
+7. `Summarize open PRs touching auth` (runs in parallel block)
+8. `Review auth-related production logs` (runs in parallel block)
+9. `Write release notes summary`
 
 #### Jobs & Control
 Monitor and control long-running operations with real-time progress updates.

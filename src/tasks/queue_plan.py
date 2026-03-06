@@ -13,6 +13,8 @@ _BRANCH_START_RE = re.compile(r"^\*\*\*branch-(.+)$")
 _BRANCH_END_RE = re.compile(r"^\*\*\*branch-(.+)-end$")
 _LOOP_START_RE = re.compile(r"^\*\*\*loop-(-?\d+)$")
 _LOOP_END_RE = re.compile(r"^\*\*\*loop-(-?\d+)-end$")
+_PARALLEL_START_RE = re.compile(r"^\*\*\*parallel(?:-(-?\d+))?$")
+_PARALLEL_END_RE = re.compile(r"^\*\*\*parallel-end$")
 
 
 class QueuePlanError(ValueError):
@@ -25,6 +27,8 @@ class QueuePlanPrompt:
 
     prompt: str
     branch_name: Optional[str] = None
+    parallel_group_id: Optional[str] = None
+    parallel_limit: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,8 @@ class MaterializedQueuePlanPrompt:
 
     prompt: str
     working_directory_override: Optional[str] = None
+    parallel_group_id: Optional[str] = None
+    parallel_limit: Optional[int] = None
 
 
 @dataclass
@@ -52,7 +58,13 @@ class _LoopNode:
     children: list["_Node"]
 
 
-_Node = _PromptNode | _BranchNode | _LoopNode
+@dataclass
+class _ParallelNode:
+    limit: Optional[int]
+    children: list["_Node"]
+
+
+_Node = _PromptNode | _BranchNode | _LoopNode | _ParallelNode
 
 
 @dataclass
@@ -61,6 +73,7 @@ class _Frame:
     start_line: int
     branch_name: Optional[str] = None
     loop_count: Optional[int] = None
+    parallel_limit: Optional[int] = None
     nodes: list[_Node] = field(default_factory=list)
     prompt_lines: list[str] = field(default_factory=list)
 
@@ -91,7 +104,15 @@ def parse_queue_plan_text(
 
     root = _parse_to_ast(text)
     expanded: list[QueuePlanPrompt] = []
-    _expand_nodes(root, active_branch=None, out=expanded, max_items=max_expanded_items)
+    _expand_nodes(
+        root,
+        active_branch=None,
+        active_parallel_group_id=None,
+        active_parallel_limit=None,
+        out=expanded,
+        max_items=max_expanded_items,
+        group_counter=[0],
+    )
 
     if not expanded:
         raise QueuePlanError("No prompts found in structured queue plan.")
@@ -121,7 +142,14 @@ async def materialize_queue_plan_prompts(
     """Resolve branch-scoped queue entries to concrete worktree paths."""
     branch_names = sorted({item.branch_name for item in expanded if item.branch_name})
     if not branch_names:
-        return [MaterializedQueuePlanPrompt(prompt=item.prompt) for item in expanded]
+        return [
+            MaterializedQueuePlanPrompt(
+                prompt=item.prompt,
+                parallel_group_id=item.parallel_group_id,
+                parallel_limit=item.parallel_limit,
+            )
+            for item in expanded
+        ]
 
     service = git_service or GitService()
     if not await service.validate_git_repo(working_directory):
@@ -159,6 +187,8 @@ async def materialize_queue_plan_prompts(
             working_directory_override=(
                 worktree_paths_by_branch[item.branch_name] if item.branch_name else None
             ),
+            parallel_group_id=item.parallel_group_id,
+            parallel_limit=item.parallel_limit,
         )
         for item in expanded
     ]
@@ -227,6 +257,26 @@ def _parse_to_ast(text: str) -> list[_Node]:
             _close_frame(stack)
             continue
 
+        if marker_type == "parallel_start":
+            if current.kind == "parallel":
+                raise QueuePlanError(
+                    f"Line {line_number}: nested parallel blocks are not supported."
+                )
+            stack.append(
+                _Frame(kind="parallel", start_line=line_number, parallel_limit=marker[1])
+            )
+            continue
+
+        if marker_type == "parallel_end":
+            if current.kind != "parallel":
+                detail = _unexpected_block_close_detail(current)
+                raise QueuePlanError(
+                    f"Line {line_number}: found parallel end marker without matching open "
+                    f"parallel block. {detail}"
+                )
+            _close_frame(stack)
+            continue
+
         raise QueuePlanError(f"Line {line_number}: unsupported queue-plan marker.")
 
     _flush_prompt(stack[-1])
@@ -248,6 +298,11 @@ def _close_frame(stack: list[_Frame]) -> None:
     if finished.kind == "loop":
         stack[-1].nodes.append(_LoopNode(count=finished.loop_count or 1, children=finished.nodes))
         return
+    if finished.kind == "parallel":
+        stack[-1].nodes.append(
+            _ParallelNode(limit=finished.parallel_limit, children=finished.nodes)
+        )
+        return
     raise QueuePlanError("Unsupported queue-plan frame type.")
 
 
@@ -268,14 +323,22 @@ def _unexpected_block_close_detail(current: _Frame) -> str:
             f"You are currently inside loop `{loop_count}` opened on line "
             f"{current.start_line}. Close it first with `***loop-{loop_count}-end`."
         )
+    if current.kind == "parallel":
+        return (
+            f"You are currently inside parallel block opened on line {current.start_line}. "
+            "Close it first with `***parallel-end`."
+        )
     return "A different block is currently open."
 
 
 def _expand_nodes(
     nodes: list[_Node],
     active_branch: Optional[str],
+    active_parallel_group_id: Optional[str],
+    active_parallel_limit: Optional[int],
     out: list[QueuePlanPrompt],
     max_items: int,
+    group_counter: list[int],
 ) -> None:
     for node in nodes:
         if isinstance(node, _PromptNode):
@@ -283,20 +346,52 @@ def _expand_nodes(
                 raise QueuePlanError(
                     f"Structured queue plan expands to more than {max_items} items."
                 )
-            out.append(QueuePlanPrompt(prompt=node.prompt, branch_name=active_branch))
+            out.append(
+                QueuePlanPrompt(
+                    prompt=node.prompt,
+                    branch_name=active_branch,
+                    parallel_group_id=active_parallel_group_id,
+                    parallel_limit=active_parallel_limit,
+                )
+            )
             continue
 
         if isinstance(node, _BranchNode):
             _expand_nodes(
-                node.children, active_branch=node.branch_name, out=out, max_items=max_items
+                node.children,
+                active_branch=node.branch_name,
+                active_parallel_group_id=active_parallel_group_id,
+                active_parallel_limit=active_parallel_limit,
+                out=out,
+                max_items=max_items,
+                group_counter=group_counter,
             )
             continue
 
         if isinstance(node, _LoopNode):
             for _ in range(node.count):
                 _expand_nodes(
-                    node.children, active_branch=active_branch, out=out, max_items=max_items
+                    node.children,
+                    active_branch=active_branch,
+                    active_parallel_group_id=active_parallel_group_id,
+                    active_parallel_limit=active_parallel_limit,
+                    out=out,
+                    max_items=max_items,
+                    group_counter=group_counter,
                 )
+            continue
+
+        if isinstance(node, _ParallelNode):
+            group_counter[0] += 1
+            _expand_nodes(
+                node.children,
+                active_branch=active_branch,
+                active_parallel_group_id=f"parallel-{group_counter[0]}",
+                active_parallel_limit=node.limit,
+                out=out,
+                max_items=max_items,
+                group_counter=group_counter,
+            )
             continue
 
         raise QueuePlanError("Unsupported queue-plan node type.")
@@ -315,6 +410,14 @@ def _flush_prompt(frame: _Frame) -> None:
 def _parse_marker(line: str, strict: bool) -> tuple[str, str | int] | tuple[str] | None:
     if line == "***":
         return ("separator",)
+
+    parallel_end = _PARALLEL_END_RE.match(line)
+    if parallel_end:
+        return ("parallel_end",)
+
+    parallel_start = _PARALLEL_START_RE.match(line)
+    if parallel_start:
+        return _parse_parallel_marker_value(parallel_start.group(1), line)
 
     loop_end = _LOOP_END_RE.match(line)
     if loop_end:
@@ -355,3 +458,18 @@ def _parse_branch_marker_value(branch_text: str, marker_type: str) -> tuple[str,
             raise QueuePlanError("Branch end marker must include a branch name.")
         raise QueuePlanError("Branch marker must include a branch name.")
     return marker_type, branch_name
+
+
+def _parse_parallel_marker_value(
+    limit_text: Optional[str], line: str
+) -> tuple[str, Optional[int]]:
+    """Parse and validate parallel marker payload."""
+    if limit_text is None:
+        return "parallel_start", None
+
+    limit = int(limit_text)
+    if limit < 1:
+        raise QueuePlanError(
+            f"Invalid parallel width `{limit}` in marker `{line}`. Width must be >= 1."
+        )
+    return "parallel_start", limit

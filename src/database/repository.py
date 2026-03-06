@@ -30,8 +30,9 @@ class DatabaseRepository:
                        (thread_ts IS NULL AND ? IS NULL)
                    )"""
     _QUEUE_ITEM_SELECT = """id, session_id, channel_id, thread_ts, prompt,
-                       working_directory_override, status, output, error_message,
-                       position, message_ts, created_at, started_at, completed_at"""
+                       working_directory_override, parallel_group_id, parallel_limit,
+                       status, output, error_message, position, message_ts,
+                       created_at, started_at, completed_at"""
 
     def __init__(self, db_path: str, timeout: float = DB_TIMEOUT):
         self.db_path = db_path
@@ -668,12 +669,15 @@ class DatabaseRepository:
         thread_ts: Optional[str],
         prompt: str,
         working_directory_override: Optional[str] = None,
+        parallel_group_id: Optional[str] = None,
+        parallel_limit: Optional[int] = None,
     ) -> QueueItem:
         """Add a command to the FIFO queue."""
         normalized_thread_ts = self._normalize_thread_ts(thread_ts)
         normalized_working_directory_override = (
             working_directory_override.strip() if working_directory_override else None
         )
+        normalized_parallel_group_id = parallel_group_id.strip() if parallel_group_id else None
         async with self._get_connection() as db:
             await self._ensure_wal_mode(db)
             try:
@@ -692,14 +696,16 @@ class DatabaseRepository:
                 cursor = await db.execute(
                     """INSERT INTO queue_items
                        (session_id, channel_id, thread_ts, prompt, working_directory_override,
-                        position, status)
-                       VALUES (?, ?, ?, ?, ?, ?, 'pending')""",
+                        parallel_group_id, parallel_limit, position, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
                     (
                         session_id,
                         channel_id,
                         normalized_thread_ts,
                         prompt,
                         normalized_working_directory_override,
+                        normalized_parallel_group_id,
+                        parallel_limit,
                         position,
                     ),
                 )
@@ -728,7 +734,7 @@ class DatabaseRepository:
         session_id: int,
         channel_id: str,
         thread_ts: Optional[str],
-        queue_entries: list[tuple[str, Optional[str]]],
+        queue_entries: list[tuple[str, Optional[str], Optional[str], Optional[int]]],
     ) -> list[QueueItem]:
         """Add multiple commands to the FIFO queue atomically.
 
@@ -740,15 +746,22 @@ class DatabaseRepository:
             Slack channel ID for queue scope.
         thread_ts : str | None
             Slack thread timestamp for queue scope.
-        queue_entries : list[tuple[str, Optional[str]]]
-            Sequence of (prompt, working_directory_override) entries in queue order.
+        queue_entries : list[tuple[str, Optional[str], Optional[str], Optional[int]]]
+            Sequence of (prompt, working_directory_override, parallel_group_id,
+            parallel_limit) entries in queue order.
         """
         if not queue_entries:
             return []
 
         normalized_thread_ts = self._normalize_thread_ts(thread_ts)
         normalized_entries = [
-            (prompt, override.strip() if override else None) for prompt, override in queue_entries
+            (
+                prompt,
+                override.strip() if override else None,
+                parallel_group_id.strip() if parallel_group_id else None,
+                parallel_limit,
+            )
+            for prompt, override, parallel_group_id, parallel_limit in queue_entries
         ]
 
         async with self._get_connection() as db:
@@ -765,20 +778,27 @@ class DatabaseRepository:
                 base_position = (await cursor.fetchone())[0]
 
                 created_item_ids: list[int] = []
-                for offset, (prompt, working_directory_override) in enumerate(
+                for offset, (
+                    prompt,
+                    working_directory_override,
+                    parallel_group_id,
+                    parallel_limit,
+                ) in enumerate(
                     normalized_entries, start=1
                 ):
                     cursor = await db.execute(
                         """INSERT INTO queue_items
                            (session_id, channel_id, thread_ts, prompt, working_directory_override,
-                            position, status)
-                           VALUES (?, ?, ?, ?, ?, ?, 'pending')""",
+                            parallel_group_id, parallel_limit, position, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
                         (
                             session_id,
                             channel_id,
                             normalized_thread_ts,
                             prompt,
                             working_directory_override,
+                            parallel_group_id,
+                            parallel_limit,
                             base_position + offset,
                         ),
                     )
@@ -821,6 +841,34 @@ class DatabaseRepository:
                    ORDER BY position ASC, id ASC""",
                 self._queue_scope_params(channel_id, thread_ts),
             )
+            rows = await cursor.fetchall()
+            return [QueueItem.from_row(row) for row in rows]
+
+    async def get_queue_group_items(
+        self,
+        channel_id: str,
+        thread_ts: Optional[str],
+        parallel_group_id: str,
+        statuses: Optional[tuple[str, ...]] = None,
+    ) -> list[QueueItem]:
+        """Get queue items for a parallel group, ordered by position."""
+        if not parallel_group_id:
+            return []
+
+        async with self._get_connection() as db:
+            params: list[object] = list(self._queue_scope_params(channel_id, thread_ts))
+            params.append(parallel_group_id)
+            sql = (
+                f"""SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE """
+                + self._QUEUE_SCOPE_WHERE
+                + " AND parallel_group_id = ?"
+            )
+            if statuses:
+                placeholders = ", ".join("?" for _ in statuses)
+                sql += f" AND status IN ({placeholders})"
+                params.extend(statuses)
+            sql += " ORDER BY position ASC, id ASC"
+            cursor = await db.execute(sql, tuple(params))
             rows = await cursor.fetchall()
             return [QueueItem.from_row(row) for row in rows]
 
@@ -923,6 +971,20 @@ class DatabaseRepository:
             )
             row = await cursor.fetchone()
             return QueueItem.from_row(row) if row else None
+
+    async def get_running_queue_items(
+        self, channel_id: str, thread_ts: Optional[str]
+    ) -> list[QueueItem]:
+        """Get all running queue items for a session scope."""
+        async with self._get_connection() as db:
+            cursor = await db.execute(
+                f"""SELECT {self._QUEUE_ITEM_SELECT} FROM queue_items WHERE """
+                + self._QUEUE_SCOPE_WHERE
+                + " AND status = 'running' ORDER BY position ASC, id ASC",
+                self._queue_scope_params(channel_id, thread_ts),
+            )
+            rows = await cursor.fetchall()
+            return [QueueItem.from_row(row) for row in rows]
 
     # Uploaded file operations
     async def add_uploaded_file(

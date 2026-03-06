@@ -530,7 +530,13 @@ async def _queue_structured_plan_message(
 
     try:
         queue_entries = [
-            (item.prompt, item.working_directory_override) for item in materialized_prompts
+            (
+                item.prompt,
+                item.working_directory_override,
+                item.parallel_group_id,
+                item.parallel_limit,
+            )
+            for item in materialized_prompts
         ]
         queued_items = await deps.db.add_many_to_queue(
             session_id=session.id,
@@ -539,8 +545,8 @@ async def _queue_structured_plan_message(
             queue_entries=queue_entries,
         )
 
-        running = await deps.db.get_running_queue_item(channel_id, thread_ts)
-        position_offset = 1 if running else 0
+        running = await deps.db.get_running_queue_items(channel_id, thread_ts)
+        position_offset = len(running)
         start_position = queued_items[0].position + position_offset
         end_position = queued_items[-1].position + position_offset
 

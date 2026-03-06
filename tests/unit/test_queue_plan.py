@@ -18,6 +18,7 @@ def test_contains_queue_plan_markers_detects_known_markers() -> None:
     assert contains_queue_plan_markers("first\n***\nsecond") is True
     assert contains_queue_plan_markers("***loop-2\nrun\n***loop-2-end") is True
     assert contains_queue_plan_markers("***branch-feature/x\nrun\n***branch-feature/x-end") is True
+    assert contains_queue_plan_markers("***parallel-2\nrun\n***parallel-end") is True
 
 
 def test_contains_queue_plan_markers_ignores_non_marker_plain_text() -> None:
@@ -46,6 +47,27 @@ def test_parse_queue_plan_branch_section_scopes_prompts() -> None:
 def test_parse_queue_plan_loop_expands_prompts() -> None:
     prompts = parse_queue_plan_text("***loop-3\nrun once\n***loop-3-end")
     assert [item.prompt for item in prompts] == ["run once", "run once", "run once"]
+
+
+def test_parse_queue_plan_parallel_block_assigns_shared_group() -> None:
+    prompts = parse_queue_plan_text("***parallel-2\nfirst\n***\nsecond\n***parallel-end")
+    assert [item.prompt for item in prompts] == ["first", "second"]
+    assert prompts[0].parallel_group_id == prompts[1].parallel_group_id
+    assert prompts[0].parallel_limit == 2
+    assert prompts[1].parallel_limit == 2
+
+
+def test_parse_queue_plan_parallel_inside_loop_creates_distinct_groups() -> None:
+    prompts = parse_queue_plan_text("***loop-2\n***parallel\none\n***parallel-end\n***loop-2-end")
+    assert [item.prompt for item in prompts] == ["one", "one"]
+    assert prompts[0].parallel_group_id != prompts[1].parallel_group_id
+    assert prompts[0].parallel_limit is None
+    assert prompts[1].parallel_limit is None
+
+
+def test_parse_queue_plan_rejects_nested_parallel_blocks() -> None:
+    with pytest.raises(QueuePlanError, match="nested parallel blocks"):
+        parse_queue_plan_text("***parallel\n***parallel-2\nrun\n***parallel-end\n***parallel-end")
 
 
 def test_parse_queue_plan_allows_nested_loop_and_branch() -> None:
@@ -149,6 +171,7 @@ async def test_materialize_queue_plan_without_branch_does_not_touch_git() -> Non
 
     assert [item.prompt for item in materialized] == ["first", "second"]
     assert all(item.working_directory_override is None for item in materialized)
+    assert all(item.parallel_group_id is None for item in materialized)
     git_service.validate_git_repo.assert_not_called()
     git_service.list_worktrees.assert_not_called()
     git_service.add_worktree.assert_not_called()
@@ -228,3 +251,14 @@ async def test_materialize_queue_plan_prompts_applies_branch_path_mapping() -> N
         "/repo-worktrees/feature/a",
         None,
     ]
+
+
+@pytest.mark.asyncio
+async def test_materialize_queue_plan_preserves_parallel_metadata() -> None:
+    materialized = await materialize_queue_plan_text(
+        text="***parallel-3\nfirst\n***\nsecond\n***parallel-end",
+        working_directory="/repo",
+    )
+
+    assert [item.parallel_limit for item in materialized] == [3, 3]
+    assert materialized[0].parallel_group_id == materialized[1].parallel_group_id

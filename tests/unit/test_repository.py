@@ -411,15 +411,32 @@ class TestQueueOperations:
             channel_id="C123ABC",
             thread_ts=None,
             queue_entries=[
-                ("first", None),
-                ("second", "/repo-worktrees/feature-y"),
-                ("third", None),
+                ("first", None, None, None),
+                ("second", "/repo-worktrees/feature-y", None, None),
+                ("third", None, None, None),
             ],
         )
 
         assert [item.prompt for item in items] == ["first", "second", "third"]
         assert [item.position for item in items] == [1, 2, 3]
         assert items[1].working_directory_override == "/repo-worktrees/feature-y"
+
+    @pytest.mark.asyncio
+    async def test_add_many_to_queue_preserves_parallel_metadata(self, db_repo):
+        """add_many_to_queue stores parallel group metadata on queued items."""
+        session = await db_repo.get_or_create_session("C123ABC", None)
+        items = await db_repo.add_many_to_queue(
+            session_id=session.id,
+            channel_id="C123ABC",
+            thread_ts=None,
+            queue_entries=[
+                ("first", None, "parallel-1", 2),
+                ("second", None, "parallel-1", 2),
+            ],
+        )
+
+        assert [item.parallel_group_id for item in items] == ["parallel-1", "parallel-1"]
+        assert [item.parallel_limit for item in items] == [2, 2]
 
     @pytest.mark.asyncio
     async def test_add_many_to_queue_respects_existing_positions(self, db_repo):
@@ -431,7 +448,7 @@ class TestQueueOperations:
             session_id=session.id,
             channel_id="C123ABC",
             thread_ts=None,
-            queue_entries=[("next-1", None), ("next-2", None)],
+            queue_entries=[("next-1", None, None, None), ("next-2", None, None, None)],
         )
 
         assert [item.position for item in items] == [2, 3]
@@ -535,6 +552,41 @@ class TestQueueOperations:
         """get_running_queue_item returns None when nothing running."""
         result = await db_repo.get_running_queue_item("C123ABC", None)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_running_queue_items_returns_all_running(self, db_repo):
+        """get_running_queue_items returns all running items for a scope."""
+        session = await db_repo.get_or_create_session("C123ABC", None)
+        item1 = await db_repo.add_to_queue(session.id, "C123ABC", None, "first")
+        item2 = await db_repo.add_to_queue(session.id, "C123ABC", None, "second")
+        await db_repo.update_queue_item_status(item1.id, "running")
+        await db_repo.update_queue_item_status(item2.id, "running")
+
+        running = await db_repo.get_running_queue_items("C123ABC", None)
+
+        assert [item.id for item in running] == [item1.id, item2.id]
+
+    @pytest.mark.asyncio
+    async def test_get_queue_group_items_filters_by_group_and_status(self, db_repo):
+        """get_queue_group_items filters by parallel group id and status."""
+        session = await db_repo.get_or_create_session("C123ABC", None)
+        items = await db_repo.add_many_to_queue(
+            session_id=session.id,
+            channel_id="C123ABC",
+            thread_ts=None,
+            queue_entries=[
+                ("first", None, "parallel-1", 2),
+                ("second", None, "parallel-1", 2),
+                ("third", None, "parallel-2", 1),
+            ],
+        )
+        await db_repo.update_queue_item_status(items[0].id, "running")
+
+        grouped = await db_repo.get_queue_group_items(
+            "C123ABC", None, "parallel-1", statuses=("pending", "running")
+        )
+
+        assert [item.prompt for item in grouped] == ["first", "second"]
 
     @pytest.mark.asyncio
     async def test_queue_scope_isolated_by_thread(self, db_repo):

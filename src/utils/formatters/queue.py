@@ -7,6 +7,7 @@ from .base import escape_markdown
 
 def queue_status(pending: list, running: Any) -> list[dict]:
     """Format queue status for /qv command."""
+    running_items = running if isinstance(running, list) else ([running] if running else [])
     blocks = [
         {
             "type": "header",
@@ -19,14 +20,21 @@ def queue_status(pending: list, running: Any) -> list[dict]:
         {"type": "divider"},
     ]
 
-    if running:
+    if running_items:
+        running_lines = []
+        for item in running_items[:10]:
+            label = f"#{item.id}"
+            if item.parallel_group_id:
+                width = item.parallel_limit or "all"
+                label += f" · parallel `{item.parallel_group_id}` (max {width})"
+            running_lines.append(
+                f":arrow_forward: *Running:* {label}\n> "
+                f"{escape_markdown(item.prompt[:100])}{'...' if len(item.prompt) > 100 else ''}"
+            )
         blocks.append(
             {
                 "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f":arrow_forward: *Running:* #{running.id}\n> {escape_markdown(running.prompt[:100])}{'...' if len(running.prompt) > 100 else ''}",
-                },
+                "text": {"type": "mrkdwn", "text": "\n\n".join(running_lines)},
             }
         )
         blocks.append({"type": "divider"})
@@ -44,8 +52,18 @@ def queue_status(pending: list, running: Any) -> list[dict]:
                 {
                     "type": "section",
                     "text": {
-                        "type": "mrkdwn",
-                        "text": f"*#{item.id}* (pos {item.position})\n> {escape_markdown(item.prompt[:100])}{'...' if len(item.prompt) > 100 else ''}",
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*#{item.id}* (pos {item.position}"
+                        + (
+                            f", parallel max {item.parallel_limit or 'all'}"
+                            if item.parallel_group_id
+                            else ""
+                        )
+                        + ")\n> "
+                        + f"{escape_markdown(item.prompt[:100])}"
+                        + ("..." if len(item.prompt) > 100 else "")
+                    ),
                     },
                 }
             )
@@ -61,7 +79,7 @@ def queue_status(pending: list, running: Any) -> list[dict]:
     return blocks
 
 
-def queue_item_running(item: Any, sequence_number: int) -> list[dict]:
+def queue_item_running(item: Any, sequence_number: str) -> list[dict]:
     """Format running queue item status."""
     return [
         {

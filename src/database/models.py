@@ -156,6 +156,8 @@ class QueueItem:
     thread_ts: Optional[str] = None
     prompt: str = ""
     working_directory_override: Optional[str] = None
+    parallel_group_id: Optional[str] = None
+    parallel_limit: Optional[int] = None
     status: str = "pending"  # pending, running, completed, failed, cancelled
     output: Optional[str] = None
     error_message: Optional[str] = None
@@ -170,6 +172,26 @@ class QueueItem:
         # Handle schema evolution:
         # - thread_ts added first
         # - working_directory_override added later
+        # - parallel_group_id/parallel_limit added later
+        if len(row) >= 16:
+            return cls(
+                id=row[0],
+                session_id=row[1],
+                channel_id=row[2],
+                thread_ts=row[3],
+                prompt=row[4],
+                working_directory_override=row[5],
+                parallel_group_id=row[6],
+                parallel_limit=row[7],
+                status=row[8],
+                output=row[9],
+                error_message=row[10],
+                position=row[11],
+                message_ts=row[12],
+                created_at=(datetime.fromisoformat(row[13]) if row[13] else datetime.now()),
+                started_at=datetime.fromisoformat(row[14]) if row[14] else None,
+                completed_at=datetime.fromisoformat(row[15]) if row[15] else None,
+            )
         if len(row) >= 14:
             return cls(
                 id=row[0],

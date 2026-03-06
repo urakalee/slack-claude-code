@@ -89,15 +89,15 @@ async def execute_for_session(
     user_id: Optional[str] = None,
     logger: Any = None,
     persist_session_ids: bool = True,
+    session_scope_override: Optional[str] = None,
 ) -> CommandRouteResult:
     """Execute a prompt with the correct backend and persist resumed session IDs."""
     backend = resolve_backend_for_session(session)
+    session_scope = session_scope_override or build_session_scope(channel_id, thread_ts)
 
     if backend == "codex":
         if not deps.codex_executor:
             raise RuntimeError("Codex executor is not configured")
-
-        session_scope = build_session_scope(channel_id, thread_ts)
 
         pending_question = None
         accumulated_context = ""
@@ -308,7 +308,7 @@ async def execute_for_session(
     result = await deps.executor.execute(
         prompt=prompt,
         working_directory=session.working_directory,
-        session_id=build_session_scope(channel_id, thread_ts),
+        session_id=session_scope,
         resume_session_id=session.claude_session_id,
         execution_id=execution_id,
         on_chunk=on_chunk,

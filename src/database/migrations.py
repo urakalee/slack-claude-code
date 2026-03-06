@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS queue_items (
     thread_ts TEXT DEFAULT NULL,
     prompt TEXT NOT NULL,
     working_directory_override TEXT DEFAULT NULL,
+    parallel_group_id TEXT DEFAULT NULL,
+    parallel_limit INTEGER DEFAULT NULL,
     status TEXT DEFAULT 'pending',
     output TEXT,
     error_message TEXT,
@@ -181,6 +183,12 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             "ALTER TABLE queue_items ADD COLUMN working_directory_override TEXT DEFAULT NULL"
         )
         await db.commit()
+    if "parallel_group_id" not in queue_column_names:
+        await db.execute("ALTER TABLE queue_items ADD COLUMN parallel_group_id TEXT DEFAULT NULL")
+        await db.commit()
+    if "parallel_limit" not in queue_column_names:
+        await db.execute("ALTER TABLE queue_items ADD COLUMN parallel_limit INTEGER DEFAULT NULL")
+        await db.commit()
 
     # Ensure queue scope indexes exist for channel+thread isolation
     await db.execute(
@@ -200,6 +208,10 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
     await db.execute(
         "UPDATE queue_items SET working_directory_override = NULL "
         "WHERE TRIM(COALESCE(working_directory_override, '')) = ''"
+    )
+    await db.execute(
+        "UPDATE queue_items SET parallel_group_id = NULL "
+        "WHERE TRIM(COALESCE(parallel_group_id, '')) = ''"
     )
     await db.commit()
 
