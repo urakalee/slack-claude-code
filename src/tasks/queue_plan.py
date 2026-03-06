@@ -8,11 +8,11 @@ from src.git.service import GitError, GitService
 
 MAX_EXPANDED_QUEUE_PLAN_ITEMS = 500
 
-_ANY_MARKER_RE = re.compile(r"^\*\*\*.*\*\*\*$")
-_BRANCH_START_RE = re.compile(r"^\*\*\*branch-(.+)\*\*\*$")
-_BRANCH_END_RE = re.compile(r"^\*\*\*branch-(.+)-end\*\*\*$")
-_LOOP_START_RE = re.compile(r"^\*\*\*loop-(-?\d+)\*\*\*$")
-_LOOP_END_RE = re.compile(r"^\*\*\*loop-(-?\d+)-end\*\*\*$")
+_ANY_MARKER_RE = re.compile(r"^\*\*\*.+$")
+_BRANCH_START_RE = re.compile(r"^\*\*\*branch-(.+)$")
+_BRANCH_END_RE = re.compile(r"^\*\*\*branch-(.+)-end$")
+_LOOP_START_RE = re.compile(r"^\*\*\*loop-(-?\d+)$")
+_LOOP_END_RE = re.compile(r"^\*\*\*loop-(-?\d+)-end$")
 
 
 class QueuePlanError(ValueError):
@@ -68,13 +68,16 @@ class _Frame:
 def contains_queue_plan_markers(text: str) -> bool:
     """Return True when text includes at least one line-level queue-plan marker."""
     for line in text.splitlines():
+        stripped = line.strip()
         try:
-            marker = _parse_marker(line.strip(), strict=False)
+            marker = _parse_marker(stripped, strict=False)
         except QueuePlanError:
             # Invalid markers should still route through structured-plan handling
             # so users get a clear validation error from the parser.
             return True
         if marker is not None:
+            return True
+        if stripped.startswith("***"):
             return True
     return False
 
@@ -180,7 +183,7 @@ def _parse_to_ast(text: str) -> list[_Node]:
 
         if marker_type == "branch_start":
             branch_name = marker[1]
-            # Allow `***branch-x***` to act as a shorthand close marker
+            # Allow `***branch-x` to act as a shorthand close marker
             # when the matching branch block is currently open.
             if current.kind == "branch" and current.branch_name == branch_name:
                 _close_frame(stack)
@@ -256,14 +259,14 @@ def _unexpected_block_close_detail(current: _Frame) -> str:
         branch_name = current.branch_name or ""
         return (
             f"You are currently inside branch `{branch_name}` opened on line "
-            f"{current.start_line}. Close it first with `***branch-{branch_name}***` "
-            f"or `***branch-{branch_name}-end***`."
+            f"{current.start_line}. Close it first with `***branch-{branch_name}` "
+            f"or `***branch-{branch_name}-end`."
         )
     if current.kind == "loop":
         loop_count = current.loop_count or 1
         return (
             f"You are currently inside loop `{loop_count}` opened on line "
-            f"{current.start_line}. Close it first with `***loop-{loop_count}-end***`."
+            f"{current.start_line}. Close it first with `***loop-{loop_count}-end`."
         )
     return "A different block is currently open."
 

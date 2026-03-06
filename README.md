@@ -180,14 +180,14 @@ Queue scope follows session scope:
 | Marker | Meaning |
 |--------|---------|
 | `***` | Prompt separator (split into multiple queue items) |
-| `***branch-<name>***` ... `***branch-<name>-end***` | Run enclosed prompts in worktree for branch `<name>` (`-end` optional at EOF) |
-| `***loop-<n>***` ... `***loop-<n>-end***` | Repeat enclosed prompts `n` times (`n >= 1`, `-end` optional at EOF) |
+| `***branch-<name>` ... `***branch-<name>-end` | Run enclosed prompts in worktree for branch `<name>` (`-end` optional at EOF) |
+| `***loop-<n>` ... `***loop-<n>-end` | Repeat enclosed prompts `n` times (`n >= 1`, `-end` optional at EOF) |
 
 Rules:
 - Markers must appear on their own line.
 - Blocks can be nested (`loop` inside `branch`, `branch` inside `loop`, etc.).
 - If a block reaches end-of-input, its `*-end` marker can be omitted.
-- For branches, repeating a matching marker also closes it (for example: open with `***branch-f1***`, close later with `***branch-f1***`).
+- For branches, repeating a matching marker also closes it (for example: open with `***branch-f1`, close later with `***branch-f1`).
 - Use `*-end` markers when you need to close a block before the end of the plan.
 - Branch blocks require your current session directory to be a git repo.
 - Missing branch worktrees are auto-created for that branch when needed.
@@ -197,15 +197,15 @@ Example:
 
 ```text
 /q
-***loop-2***
+***loop-2
 Run test suite and summarize failures
 ***
-***branch-feature/auth***
+***branch-feature/auth
 Implement auth middleware updates
 ***
 Add/update auth tests and run them
-***branch-feature/auth-end***
-***loop-2-end***
+***branch-feature/auth-end
+***loop-2-end
 Write release notes summary
 ```
 

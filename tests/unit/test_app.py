@@ -289,7 +289,7 @@ class TestStructuredQueuePlanRouting:
             session=session,
             channel_id="C123",
             thread_ts=None,
-            prompt="***loop-0***",
+            prompt="***loop-0",
             logger=MagicMock(),
         )
 
@@ -367,7 +367,7 @@ class TestStructuredQueuePlanRouting:
                     session=session,
                     channel_id="C123",
                     thread_ts=None,
-                    prompt="***loop-0***",
+                    prompt="***loop-0",
                     logger=MagicMock(),
                 )
 
