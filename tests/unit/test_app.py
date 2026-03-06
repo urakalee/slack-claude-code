@@ -9,6 +9,7 @@ import pytest
 
 from src.app import (
     _event_dedupe_key,
+    _extract_structured_queue_plan_from_uploaded_files,
     _is_duplicate_event,
     _queue_structured_plan_message,
     _route_codex_message_to_active_turn_or_queue,
@@ -94,6 +95,41 @@ class TestEventHelpers:
         assert _is_duplicate_event(event, seen, now_monotonic=100.0, ttl_seconds=30.0) is False
         assert _is_duplicate_event(event, seen, now_monotonic=105.0, ttl_seconds=30.0) is True
         assert _is_duplicate_event(event, seen, now_monotonic=131.0, ttl_seconds=30.0) is False
+
+
+class TestUploadedStructuredQueuePlanDetection:
+    """Tests for structured queue-plan extraction from uploaded files."""
+
+    def test_extracts_queue_plan_from_text_snippet_file(self, tmp_path):
+        plan_text = "first task\n***\nsecond task"
+        snippet_path = tmp_path / "snippet"
+        snippet_path.write_text(plan_text, encoding="utf-8")
+        uploaded = SimpleNamespace(
+            filename="snippet",
+            mimetype="",
+            local_path=str(snippet_path),
+        )
+
+        extracted = _extract_structured_queue_plan_from_uploaded_files(
+            [uploaded], logger=MagicMock()
+        )
+
+        assert extracted == plan_text
+
+    def test_returns_none_when_uploaded_text_has_no_queue_markers(self, tmp_path):
+        text_path = tmp_path / "notes.txt"
+        text_path.write_text("just a note", encoding="utf-8")
+        uploaded = SimpleNamespace(
+            filename="notes.txt",
+            mimetype="text/plain",
+            local_path=str(text_path),
+        )
+
+        extracted = _extract_structured_queue_plan_from_uploaded_files(
+            [uploaded], logger=MagicMock()
+        )
+
+        assert extracted is None
 
 
 class TestCodexActiveTurnRouting:

@@ -52,6 +52,29 @@ from src.utils.formatters.command import (
 from src.utils.formatters.streaming import processing_message, streaming_update
 from src.utils.streaming import StreamingMessageState, create_streaming_callback
 
+_TEXT_MIME_TYPES_FOR_QUEUE_PLAN = {
+    "application/json",
+    "application/toml",
+    "application/x-yaml",
+    "application/xml",
+}
+_TEXT_FILE_EXTENSIONS_FOR_QUEUE_PLAN = {
+    ".cfg",
+    ".conf",
+    ".csv",
+    ".ini",
+    ".json",
+    ".md",
+    ".markdown",
+    ".rst",
+    ".toml",
+    ".tsv",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+
 
 def configure_logging() -> None:
     """Configure log sinks for stderr and data-directory log file."""
@@ -205,6 +228,50 @@ def _strip_leading_slack_mention(text: str) -> str:
     if not text:
         return ""
     return re.sub(r"^\s*<@[^>\s]+>\s*", "", text, count=1).strip()
+
+
+def _is_text_upload_for_queue_plan(uploaded_file) -> bool:
+    """Return True when uploaded file is likely readable text for queue-plan parsing."""
+    mimetype = (uploaded_file.mimetype or "").strip().lower()
+    if not mimetype:
+        return True
+    if mimetype.startswith("text/"):
+        return True
+    if mimetype in _TEXT_MIME_TYPES_FOR_QUEUE_PLAN:
+        return True
+
+    suffix = Path(uploaded_file.local_path).suffix.strip().lower()
+    return suffix in _TEXT_FILE_EXTENSIONS_FOR_QUEUE_PLAN
+
+
+def _extract_structured_queue_plan_from_uploaded_files(uploaded_files: list, logger) -> str | None:
+    """Return first uploaded text file content that looks like a structured queue plan."""
+    for uploaded_file in uploaded_files:
+        if not _is_text_upload_for_queue_plan(uploaded_file):
+            continue
+        try:
+            content = Path(uploaded_file.local_path).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            logger.debug(
+                "Skipping uploaded file for queue-plan parsing due to UTF-8 decode failure: "
+                f"{uploaded_file.local_path}"
+            )
+            continue
+        except OSError as e:
+            logger.warning(
+                "Failed reading uploaded file for queue-plan parsing: "
+                f"{uploaded_file.local_path} ({e})"
+            )
+            continue
+
+        if contains_queue_plan_markers(content):
+            logger.info(
+                "Detected structured queue-plan markers in uploaded file: "
+                f"{uploaded_file.filename}"
+            )
+            return content
+
+    return None
 
 
 def _event_dedupe_key(event: dict[str, Any]) -> str | None:
@@ -929,7 +996,30 @@ async def main():
                         text=f"⚠️ Error processing file: {file_info['name']} - {str(e)}",
                     )
 
-        # Enhance prompt with uploaded file references
+        queue_plan_prompt = prompt
+        if not queue_plan_prompt and uploaded_files:
+            queue_plan_prompt = (
+                _extract_structured_queue_plan_from_uploaded_files(
+                    uploaded_files=uploaded_files,
+                    logger=logger,
+                )
+                or ""
+            )
+
+        if queue_plan_prompt:
+            structured_message_queued = await _queue_structured_plan_message(
+                client=client,
+                deps=deps,
+                session=session,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                prompt=queue_plan_prompt,
+                logger=logger,
+            )
+            if structured_message_queued:
+                return
+
+        # Enhance prompt with uploaded file references for normal (non-queue-plan) execution
         if uploaded_files:
             file_refs = "\n".join([f"- {f.filename} (at {f.local_path})" for f in uploaded_files])
 
@@ -938,18 +1028,6 @@ async def main():
             else:
                 # No text, only files - provide default prompt
                 prompt = f"Please analyze these uploaded files:\n{file_refs}"
-
-        structured_message_queued = await _queue_structured_plan_message(
-            client=client,
-            deps=deps,
-            session=session,
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            prompt=prompt,
-            logger=logger,
-        )
-        if structured_message_queued:
-            return
 
         # Determine which backend to use based on session model
         backend = get_backend_for_model(session.model)
